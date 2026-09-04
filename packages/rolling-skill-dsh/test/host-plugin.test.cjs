@@ -182,9 +182,32 @@ function seedCurationPrerequisites(dataRoot) {
         },
     })
     installations.updateJob(job.id, {status: "running"})
+    const parsedResult = {
+        schema: "rolling-skill-install-result/v1",
+        status: "succeeded",
+        operation: "install",
+        classificationBefore: "absent",
+        destination,
+        source: {...job.request.source},
+        permission: {requested: null, effective: null},
+        result: {
+            actualDigest: job.request.source.expectedDigest,
+            beforeDigest: null,
+            mutationPerformed: true,
+            runtimeDiscovered: true,
+        },
+        warnings: [],
+        error: null,
+        verification: "runtime-inventory",
+        trusted: true,
+    }
+    installations.acceptRegistration(job.id, {
+        invocationFingerprint: "seed-curation-installation",
+        parsedResult,
+    })
     installations.completeJob(job.id, {
         status: "succeeded",
-        parsedResult: {trusted: true, destination, verification: "runtime-inventory"},
+        parsedResult,
     })
     return dataset
 }
@@ -406,7 +429,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
             idempotencyKey: "host-create-1",
         },
     )
-    assert.equal(created.status, 200)
+    assert.equal(created.status, 200, JSON.stringify(created.body))
     assert.equal(created.body.value.sessionId, "session-1")
     assert.equal(created.body.value.startSeq, 1)
     assert.equal(sessionReads, 2, "create must re-read the Session after inspect")

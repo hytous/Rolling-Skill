@@ -582,6 +582,11 @@ class OperatorSessionManager {
         return options
     }
 
+    async #nameRuntimeThread(control, title) {
+        if (!title || typeof control.client?.setThreadName !== "function") return
+        await bestEffort(() => control.client.setThreadName(control.runtimeThreadId, title))
+    }
+
     #append(control, kind, payload = {}) {
         const safe = redactOperatorSecrets(payload, control.childEnvironment)
         return this.#store.appendSessionTranscript(control.sessionId, {kind, ...safe})
@@ -1283,6 +1288,7 @@ class OperatorSessionManager {
             "runtimeId",
             "modelId",
             "effort",
+            "title",
             "objective",
             "actions",
             "scopes",
@@ -1296,6 +1302,9 @@ class OperatorSessionManager {
         const runtime = await this.#runtimeById(input.runtimeId)
         const modelId = selectedModel(runtime, input.modelId)
         const effort = selectedEffort(runtime, input.effort)
+        const title = input.title === undefined
+            ? null
+            : requiredText(input.title, "Operator session title", 200)
         const objective = messageText(input.objective, "Operator objective")
         const context = protocolSnapshot({
             actions: input.actions,
@@ -1375,6 +1384,7 @@ class OperatorSessionManager {
                 transport: publicSelection(frozen.selection),
                 frozenTransport: frozen.selection,
                 nativeResume: control.nativeResume,
+                ...(title === null ? {} : {title}),
                 ...(managedWorkspace.binding === null
                     ? {}
                     : {managedSkillBinding: managedWorkspace.binding}),
@@ -1391,6 +1401,7 @@ class OperatorSessionManager {
             control.runtimeThreadId = runtimeThreadId(thread)
             this.#hiddenThreadIds.add(control.runtimeThreadId)
             this.#append(control, "runtime_thread_started", {runtimeThreadId: control.runtimeThreadId})
+            await this.#nameRuntimeThread(control, title)
             parentJob = this.#store.transitionJob(parentJob.id, "running")
             await this.#startTurn(control, buildOperatorInitialInput(protocolContext, objective))
             return this.#snapshot(control)
@@ -1762,6 +1773,7 @@ class OperatorSessionManager {
                         runtimeThreadId: control.runtimeThreadId,
                         capabilityId: authority.grant.id,
                     })
+                    await this.#nameRuntimeThread(control, configuration.title)
                 } catch (error) {
                     this.#assertControlOwned(control, restorationGeneration)
                     if (!nativeResumeUnavailable(error)) throw error
@@ -1778,6 +1790,7 @@ class OperatorSessionManager {
                     capabilityId: authority.grant.id,
                     checkpointResume: true,
                 })
+                await this.#nameRuntimeThread(control, configuration.title)
                 const jobs = this.#store.listJobs({sessionId: session.id})
                 const jobIds = new Set(jobs.map((job) => job.id))
                 const artifacts = this.#store.read().artifacts.filter((artifact) => jobIds.has(artifact.jobId))

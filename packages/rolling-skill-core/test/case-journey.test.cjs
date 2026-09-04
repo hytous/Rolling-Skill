@@ -109,12 +109,17 @@ async function fixture(t) {
         clients[descriptor.runtimeId].inventory = [{name: skill.name, path: `${destination}/SKILL.md`, enabled: true}]
         const job = installations.createJob({runtime: descriptor, request, modelId: null, effort: null, permissionMode: "workspace-write"})
         installations.updateJob(job.id, {status: "running"})
-        installations.completeJob(job.id, {status: "succeeded", parsedResult: {
+        const parsedResult = {
             schema: "rolling-skill-install-result/v1", status: "succeeded", operation: "install", classificationBefore: "absent",
             destination, source: {...request.source}, permission: {requested: "workspace-write", effective: "workspace-write"},
             result: {actualDigest: request.source.expectedDigest, markerWritten: true, runtimeDiscovered: true},
             warnings: [], error: null, verification: "runtime-inventory", trusted: true,
-        }})
+        }
+        installations.acceptRegistration(job.id, {
+            invocationFingerprint: `seed-case-journey-${descriptor.runtimeId}`,
+            parsedResult,
+        })
+        installations.completeJob(job.id, {status: "succeeded", parsedResult})
     }
     const episode = buildEpisodeSnapshot(thread("source-a"), {startItemId: "user-1", endItemId: "answer-1", runtimeId: "codex:a"})
     const frozen = {...episode, source: {...episode.source, kind: "dsh-session", sessionId: "native-session", startSeq: 1, endSeq: 2,

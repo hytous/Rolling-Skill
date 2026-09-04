@@ -589,6 +589,10 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("thread/read", {threadId, includeTurns: true})
     }
 
+    setThreadName(threadId, name) {
+        return this.request("thread/name/set", {threadId, name})
+    }
+
     async startThread(options = {}) {
         const dynamicTools = Object.hasOwn(options, "dynamicTools")
             ? JSON.parse(JSON.stringify(options.dynamicTools))

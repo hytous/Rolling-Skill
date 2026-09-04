@@ -249,6 +249,10 @@ describe("Optimization control service", () => {
         assert.equal(context.store.createOptions.idempotencyKey, "start-1")
         assert.equal(context.workspaceCalls.length, 1)
         assert.equal(context.operatorCalls.length, 1)
+        assert.equal(
+            context.operatorCalls[0].title,
+            "Skill 自动优化 · skill-1 · optimization-run-1",
+        )
         assert.deepEqual(context.operatorCalls[0].managedSkillBinding, {
             repositoryId: "repository-1",
             skillId: "skill-1",

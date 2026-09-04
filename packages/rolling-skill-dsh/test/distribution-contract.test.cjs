@@ -27,9 +27,10 @@ it("documents DSH distribution and rejects unsafe package entries", async () => 
         ["package/lib/index.js", Buffer.from("export function apply() {}")],
         ["package/lib/client.js", Buffer.from("window.__ModuleLoader__.load({id:'@rolling-skill/dsh-plugin'})")],
         ["package/lib/worker.cjs", Buffer.from("#!/usr/bin/env node\n")],
+        ["package/lib/rolling-skill-tool", Buffer.from("#!/usr/bin/env node\n")],
     ])
     const report = inspectEntries(safe)
-    assert.equal(report.fileCount, 6)
+    assert.equal(report.fileCount, 7)
     assert.equal(report.unpackedBytes, [...safe.values()].reduce((sum, body) => sum + body.byteLength, 0))
     assert.equal(report.packedBytes, null)
     assert.deepEqual(report.files, [...safe.keys()].sort())

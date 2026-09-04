@@ -48,8 +48,16 @@ describe("Rolling Skill DSH package manifest", () => {
         assert.match(worker, /^#!\/usr\/bin\/env node\n/u)
     })
 
+    it("ships the executable scoped control Tool used by installation Runtimes", () => {
+        const toolPath = join(packageRoot, "lib", "rolling-skill-tool")
+        assert.equal(existsSync(toolPath), true, "Scoped control Tool should exist")
+        const tool = readFileSync(toolPath, "utf8")
+        assert.equal(tool.match(/^#!.*$/gmu)?.length, 1)
+        assert.match(tool, /^#!\/usr\/bin\/env node\n/u)
+    })
+
     it("keeps generated bundle lines free of trailing whitespace", () => {
-        for (const filename of ["index.js", "client.js", "worker.cjs"]) {
+        for (const filename of ["index.js", "client.js", "worker.cjs", "rolling-skill-tool"]) {
             const bundle = readFileSync(join(packageRoot, "lib", filename), "utf8")
             assert.doesNotMatch(bundle, /[ \t]+$/mu, `${filename} contains trailing whitespace`)
         }

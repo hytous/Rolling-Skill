@@ -66,6 +66,10 @@ class FakeClient extends EventEmitter {
         return {thread: {id: this.threadId, model: options.model ?? null, effort: options.effort ?? null}}
     }
 
+    async setThreadName(threadId, name) {
+        this.calls.push({method: "setThreadName", threadId, name})
+    }
+
     async resumeThread(threadId, options) {
         this.calls.push({method: "resumeThread", threadId, options})
         return {thread: {id: threadId, model: options.model ?? null, effort: options.effort ?? null}}
@@ -627,6 +631,53 @@ describe("OperatorSessionManager", () => {
         assert.equal(JSON.stringify(startTurn.input).includes(runtime().executablePath), false)
     })
 
+    it("sets an explicit user-facing Runtime task title before the first turn", async () => {
+        const {manager, clients, store} = fixture()
+
+        const created = await manager.create(createInput({title: "Skill 自动优化 · billing · adcf41f4"}))
+
+        const runtimeCalls = clients[0].calls.filter(({method}) => (
+            ["startThread", "setThreadName", "startTurn"].includes(method)
+        ))
+        assert.deepEqual(runtimeCalls.map(({method}) => method), [
+            "startThread",
+            "setThreadName",
+            "startTurn",
+        ])
+        assert.deepEqual(runtimeCalls[1], {
+            method: "setThreadName",
+            threadId: "runtime-thread-1",
+            name: "Skill 自动优化 · billing · adcf41f4",
+        })
+        const configuration = store.getSession(created.session.id).transcript.findLast(
+            (entry) => entry.kind === "operator_session_configuration",
+        )
+        assert.equal(configuration.title, "Skill 自动优化 · billing · adcf41f4")
+    })
+
+    it("continues the Operator task when cosmetic Runtime naming is unavailable", async () => {
+        const context = fixture({
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.setThreadName = async (threadId, name) => {
+                    client.calls.push({method: "setThreadName", threadId, name})
+                    throw Object.assign(new Error("thread/name/set unsupported"), {
+                        code: "UNSUPPORTED",
+                    })
+                }
+                return client
+            },
+        })
+
+        const created = await context.manager.create(createInput({
+            title: "Skill 自动优化 · billing · adcf41f4",
+        }))
+
+        assert.equal(created.parentJob.status, "running")
+        assert.equal(context.clients[0].calls.some(({method}) => method === "setThreadName"), true)
+        assert.equal(context.clients[0].calls.some(({method}) => method === "startTurn"), true)
+    })
+
     it("omits unsupported effort from Runtime calls and durable session selection", async () => {
         const {manager, clients, store} = fixture({
             runtimes: [runtime({providerId: "minimal", capabilities: ["threads"]})],
@@ -1018,7 +1069,9 @@ describe("OperatorSessionManager", () => {
 
     it("starts a checkpoint Runtime session when native resume is unavailable", async () => {
         const first = fixture({supportsNativeResume: () => false})
-        const created = await first.manager.create(createInput())
+        const created = await first.manager.create(createInput({
+            title: "Skill 自动优化 · billing · adcf41f4",
+        }))
         completed(first.clients[0])
         await nextTick()
         const artifact = first.store.createArtifact(created.parentJob.id, {
@@ -1061,9 +1114,15 @@ describe("OperatorSessionManager", () => {
         const resumed = await restarted.resume(created.session.id)
         const replacement = resumedClients[0]
         const checkpointTurn = replacement.calls.find((call) => call.method === "startTurn")
+        const replacementName = replacement.calls.find((call) => call.method === "setThreadName")
 
         assert.equal(replacement.calls.some((call) => call.method === "startThread"), true)
         assert.equal(replacement.calls.some((call) => call.method === "resumeThread"), false)
+        assert.deepEqual(replacementName, {
+            method: "setThreadName",
+            threadId: "replacement-thread",
+            name: "Skill 自动优化 · billing · adcf41f4",
+        })
         assert.match(JSON.stringify(checkpointTurn.input), /Reviewed candidate/iu)
         assert.match(JSON.stringify(checkpointTurn.input), new RegExp(artifact.id, "u"))
         assert.equal(resumed.runtimeThreadId, "replacement-thread")

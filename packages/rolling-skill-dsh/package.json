@@ -1,6 +1,6 @@
 {
   "name": "@rolling-skill/dsh-plugin",
-  "version": "0.1.68",
+  "version": "0.1.69",
   "description": "Rolling Skill evaluation and continuous case curation workbench for DeepSeek Harness",
   "license": "MIT",
   "type": "module",

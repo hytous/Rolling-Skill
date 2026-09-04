@@ -1172,6 +1172,29 @@ describe("Codex app-server request construction", () => {
         assert.equal(request.params.model, "gpt-5.6-sol")
     })
 
+    it("sets a user-facing task name through the supported thread protocol", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {}
+        }
+
+        await client.setThreadName("thread-1", "Skill 自动优化 · billing · adcf41f4")
+
+        assert.deepEqual(request, {
+            method: "thread/name/set",
+            params: {
+                threadId: "thread-1",
+                name: "Skill 自动优化 · billing · adcf41f4",
+            },
+        })
+    })
+
     it("applies a client-level execution policy to thread start and resume", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",

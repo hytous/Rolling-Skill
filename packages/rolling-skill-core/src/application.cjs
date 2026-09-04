@@ -590,6 +590,45 @@ function installationRuntimeThreadIds(installationStore) {
     return ids
 }
 
+function createDeferredInstallationManager(resolveManager, installationStore) {
+    const requireManager = () => {
+        const manager = resolveManager()
+        if (!manager) throw new Error("Skill installation is unavailable in this application mode")
+        return manager
+    }
+    const call = (method, args) => {
+        const manager = requireManager()
+        if (typeof manager[method] !== "function") {
+            throw new Error(`Skill installation ${method} is unavailable`)
+        }
+        return manager[method](...args)
+    }
+    return Object.freeze({
+        get store() {
+            return resolveManager()?.store ?? installationStore
+        },
+        overview(skillId = null) {
+            const manager = resolveManager()
+            if (manager) return call("overview", [skillId])
+            const jobs = installationStore.listJobs(skillId ? {skillId} : {})
+            return {
+                jobs,
+                matrix: skillId ? installationStore.installationMatrix(skillId) : [],
+            }
+        },
+        start: (...args) => call("start", args),
+        startOptimizationExperiment: (...args) => call("startOptimizationExperiment", args),
+        cancel: (...args) => call("cancel", args),
+        inspect: (...args) => call("inspect", args),
+        send: (...args) => call("send", args),
+        wait: (...args) => call("wait", args),
+        stopAll: (...args) => {
+            const manager = resolveManager()
+            return manager?.stopAll?.(...args)
+        },
+    })
+}
+
 function createRollingSkillApplication(options = {}) {
     const paths = ensureDataLayout(resolveDataPaths(options))
     const legacySourceRoot = options.legacySourceRoot ?? detectLegacyElectronDataRoot()
@@ -630,30 +669,11 @@ function createRollingSkillApplication(options = {}) {
     })
     const installationStore = new SkillInstallationStore(paths.skillInstallations)
     reconcileManagedDatasetBindings({store, managedSkillStore, installationStore})
-    const installationManager = new SkillInstallationManager({
-        store: installationStore,
-        managedSkillStore,
-        managedSkillManager,
-        runtimeRegistry: {
-            createClient: (descriptor, clientOptions) =>
-                runtimeServices.createClient(descriptor.runtimeId, clientOptions),
-        },
-        getRuntimes: () => runtimeServices.list(),
-        workspaceRoot,
-        traceDirectory: join(paths.traces, "skill-installations"),
-        resolvePermission: (providerId, permissionMode) =>
-            resolveRuntimePermission(providerId, permissionMode, store.read().settings),
-        requestPermission: requestRuntimePermission,
-        requestQuestion: requestRuntimeQuestion,
-        onChanged: () => publish(),
-    })
-    const skillServices = createSkillServices({
-        manager: managedSkillManager,
-        installationManager,
+    let installationManager = options.installationManager ?? null
+    const deferredInstallationManager = createDeferredInstallationManager(
+        () => installationManager,
         installationStore,
-        runtimeServices,
-        revealPath: options.revealPath ?? null,
-    })
+    )
     const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null
     const selectedRuntimeDescriptor = (runtimeId = selectedRuntimeId()) => {
         return runtimeId ? runtimeServices.descriptor(runtimeId) : null
@@ -851,7 +871,7 @@ function createRollingSkillApplication(options = {}) {
         managedSkillStore,
         managedSkillManager,
         installationStore,
-        installationManager,
+        installationManager: deferredInstallationManager,
         runtimeServices,
         evaluationRunner,
         evaluationServices,
@@ -877,6 +897,50 @@ function createRollingSkillApplication(options = {}) {
         },
         onChanged: () => publish(),
         }))
+    if (
+        !installationManager &&
+        !options.workerMode &&
+        typeof operatorRuntime.controlPlane?.invoke === "function" &&
+        typeof operatorRuntime.controlPlane?.registerInstallationExecutor === "function" &&
+        typeof operatorRuntime.controlCapabilities?.issue === "function" &&
+        typeof operatorRuntime.controlCapabilities?.revoke === "function" &&
+        typeof operatorRuntime.controlSocketPath === "string"
+    ) {
+        const installationToolPath = options.installationToolPath ?? options.operatorToolPath ?? null
+        installationManager = new SkillInstallationManager({
+            store: installationStore,
+            managedSkillStore,
+            managedSkillManager,
+            runtimeRegistry: {
+                createClient: (descriptor, clientOptions) =>
+                    runtimeServices.createClient(descriptor.runtimeId, clientOptions),
+            },
+            getRuntimes: () => runtimeServices.list(),
+            workspaceRoot,
+            traceDirectory: join(paths.traces, "skill-installations"),
+            controlPlane: operatorRuntime.controlPlane,
+            capabilities: operatorRuntime.controlCapabilities,
+            controlSocketPath: operatorRuntime.controlSocketPath,
+            installationToolPath,
+            transportSupport: (runtime) => ({
+                dynamicToolsReady: runtime?.providerId === "codex",
+                mcpServersReady: runtime?.providerId === "codebuddy" && Boolean(installationToolPath),
+                dshMcpReady: runtime?.providerId === "deepseek-harness" && Boolean(installationToolPath),
+            }),
+            resolvePermission: (providerId, permissionMode) =>
+                resolveRuntimePermission(providerId, permissionMode, store.read().settings),
+            requestPermission: requestRuntimePermission,
+            requestQuestion: requestRuntimeQuestion,
+            onChanged: () => publish(),
+        })
+    }
+    const skillServices = createSkillServices({
+        manager: managedSkillManager,
+        installationManager: deferredInstallationManager,
+        installationStore,
+        runtimeServices,
+        revealPath: options.revealPath ?? null,
+    })
     const operatorServices = operatorRuntime.services
     const skillEditServices = createSkillEditServices({
         store: skillEditStore,
@@ -1709,7 +1773,7 @@ function createRollingSkillApplication(options = {}) {
         rawCaseStore.close()
         automaticCaptureService.stopHostSchedule()
         await evaluationRunner.stopAll?.()
-        await installationManager.stopAll?.()
+        await deferredInstallationManager.stopAll()
         runtimeInteractionBroker.close?.()
         await skillEditServices.close()
         await operatorRuntime.close()

@@ -11,6 +11,20 @@ function source(path) {
 }
 
 describe("managed Skill installation detail", () => {
+    it("uses the compact managed-workbench primary style for the install action", () => {
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(renderer, /installWithRuntimes:\s*"Install on selected runtimes"/u)
+        assert.match(renderer, /installWithRuntimes:\s*"安装到所选 Runtime"/u)
+        assert.match(styles, /\.managed-install-start\s*\{[^}]*align-self:\s*flex-end/su)
+        assert.match(styles, /\.managed-install-start\s*\{[^}]*min-height:\s*31px/su)
+        assert.match(styles, /\.managed-install-start\s*\{[^}]*border-radius:\s*8px/su)
+        assert.match(styles, /\.managed-install-start\s*\{[^}]*background:\s*color-mix\(in srgb,\s*var\(--accent\)\s*13%,\s*var\(--surface\)\)/su)
+        assert.match(styles, /\.managed-install-start:hover:not\(:disabled\)\s*\{/u)
+        assert.match(styles, /\.managed-install-start:disabled\s*\{/u)
+    })
+
     it("renders compact progress and keeps the complete execution record collapsed", () => {
         const renderer = source("renderer/renderer.js")
         const styles = source("renderer/styles.css")

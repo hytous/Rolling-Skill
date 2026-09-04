@@ -1608,7 +1608,26 @@ kbd {
 }
 
 .managed-install-start {
-    width: 100%;
+    align-self: flex-end;
+    max-width: 100%;
+    min-height: 31px;
+    padding: 0 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 13%, var(--surface));
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 620;
+}
+
+.managed-install-start:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+    color: var(--accent);
+}
+
+.managed-install-start:disabled {
+    opacity: 0.42;
 }
 
 .managed-install-section-head {

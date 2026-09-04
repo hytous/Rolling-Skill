@@ -1,3 +1,7 @@
+import {existsSync} from "node:fs"
+import {dirname, resolve} from "node:path"
+import {fileURLToPath} from "node:url"
+
 import applicationModule from "../../../rolling-skill-core/src/index.cjs"
 import apiModule from "./api.cjs"
 import sessionEvidenceModule from "./session-evidence.cjs"
@@ -14,6 +18,23 @@ const {createSessionEvidenceSource} = sessionEvidenceModule
 const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 const {createNativeSkillSourcePicker, createSkillSourceDispatch} = skillSourcePickerModule
 const {createOwnedApplication} = applicationOwnerModule
+
+export function resolveControlToolExecutable(moduleUrl = import.meta.url) {
+    const moduleDirectory = dirname(fileURLToPath(moduleUrl))
+    const packagedTool = resolve(moduleDirectory, "rolling-skill-tool")
+    if (existsSync(packagedTool)) return packagedTool
+    return resolve(
+        moduleDirectory,
+        "..",
+        "..",
+        "..",
+        "..",
+        "desktop",
+        "rolling-skill",
+        "dist-tools",
+        "rolling-skill-tool",
+    )
+}
 
 export const inject = ["webServer", "tools", "sessionQuery", "agents", "apiProxy"]
 
@@ -41,9 +62,12 @@ export function apply(ctx, config = {}, dependencies = {}) {
         dataRoot: config.dataRoot,
         workerExecutable: resolveWorkerExecutable(import.meta.url),
     })
+    const controlToolPath = dependencies.controlToolPath ?? resolveControlToolExecutable(import.meta.url)
     const application = createOwnedApplication({lockDirectory: dataPaths.locks, createApplication: () => createRollingSkillApplication({
         dataRoot: config.dataRoot,
         schedulerAdapter,
+        operatorToolPath: controlToolPath,
+        installationToolPath: controlToolPath,
         ...(dependencies.runtimeRegistry ? {runtimeRegistry: dependencies.runtimeRegistry} : {}),
         conversationEpisodeSource,
         rawCaseDispatcher: createNativeSessionDispatcher({apiProxy: ctx.apiProxy}),

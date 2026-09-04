@@ -7,6 +7,15 @@ import {build} from "esbuild"
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const sourceRoot = join(packageRoot, "src")
 const outputRoot = join(packageRoot, "lib")
+const controlToolSource = join(
+    packageRoot,
+    "..",
+    "..",
+    "desktop",
+    "rolling-skill",
+    "tools",
+    "rolling-skill-tool.mjs",
+)
 const dshExternals = ["@deepseek-ai/*", "react", "react/jsx-runtime"]
 
 await rm(outputRoot, {recursive: true, force: true})
@@ -40,6 +49,20 @@ await build({
 await chmod(join(outputRoot, "worker.cjs"), 0o755)
 
 await build({
+    entryPoints: [controlToolSource],
+    outfile: join(outputRoot, "rolling-skill-tool"),
+    bundle: true,
+    format: "cjs",
+    platform: "node",
+    target: "node22",
+    legalComments: "none",
+    sourcemap: false,
+    logLevel: "warning",
+})
+
+await chmod(join(outputRoot, "rolling-skill-tool"), 0o755)
+
+await build({
     entryPoints: [join(sourceRoot, "client", "index.tsx")],
     outfile: join(outputRoot, "client.js"),
     banner: {
@@ -56,7 +79,7 @@ await build({
     logLevel: "warning",
 })
 
-for (const filename of ["index.js", "client.js", "worker.cjs"]) {
+for (const filename of ["index.js", "client.js", "worker.cjs", "rolling-skill-tool"]) {
     const path = join(outputRoot, filename)
     const source = await readFile(path, "utf8")
     await writeFile(path, source.replace(/[ \t]+$/gmu, ""), "utf8")

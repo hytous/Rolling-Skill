@@ -463,6 +463,10 @@ function createOperatorRuntime({
     })
     const capabilityStore = new CapabilityStore()
     const capabilityIssuer = createTrustedCapabilityIssuer(capabilityStore)
+    const controlCapabilities = Object.freeze({
+        issue: (request) => capabilityIssuer.issue(request),
+        revoke: (id) => capabilityStore.revoke(id),
+    })
     const sessionFacade = Object.freeze({
         pause: (sessionId_) => sessionManager.pause(sessionId_),
         resume: (sessionId_) => sessionManager.resume(sessionId_),
@@ -519,15 +523,13 @@ function createOperatorRuntime({
         engine: jobEngine,
         controlPlane,
         runtimeRegistry,
-        capabilities: {
-            issue: (request) => capabilityIssuer.issue(request),
-            revoke: (id) => capabilityStore.revoke(id),
-        },
+        capabilities: controlCapabilities,
         controlSocketPath,
         operatorToolPath,
         transportSupport: (runtime) => ({
             dynamicToolsReady: runtime?.providerId === "codex",
             mcpServersReady: runtime?.providerId === "codebuddy" && Boolean(operatorToolPath),
+            dshMcpReady: runtime?.providerId === "deepseek-harness" && Boolean(operatorToolPath),
         }),
         requestPermission,
         requestQuestion,
@@ -824,7 +826,9 @@ function createOperatorRuntime({
 
     return Object.freeze({
         close,
+        controlCapabilities,
         controlPlane,
+        controlSocketPath,
         jobEngine,
         jobStore,
         optimizationControl,

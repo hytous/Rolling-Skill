@@ -10,6 +10,7 @@ const ALLOWED_FILES = new Set([
     "package/lib/index.js",
     "package/lib/client.js",
     "package/lib/worker.cjs",
+    "package/lib/rolling-skill-tool",
 ])
 const REQUIRED_FILES = new Set(ALLOWED_FILES)
 const DEVELOPER_PATH_PATTERN = /(?:\/(?:Users|home)\/[^/\s"'<>]+\/|\/(?:data\/)?workspace\/|\/private\/var\/folders\/|[A-Za-z]:\\Users\\[^\\\s"'<>]+\\)/iu
@@ -113,6 +114,9 @@ export function inspectEntries(entries) {
     }
     if (!text(entries, "package/lib/worker.cjs").startsWith("#!/usr/bin/env node\n")) {
         throw new Error("Package Worker is not executable")
+    }
+    if (!text(entries, "package/lib/rolling-skill-tool").startsWith("#!/usr/bin/env node\n")) {
+        throw new Error("Package scoped control Tool is not executable")
     }
     return {
         name: manifest.name,

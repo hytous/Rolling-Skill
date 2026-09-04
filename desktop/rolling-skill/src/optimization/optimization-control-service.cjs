@@ -34,6 +34,18 @@ function normalizedConfig(value) {
     return structuredClone(config)
 }
 
+function optimizationTaskTitle(run) {
+    const baseline = run.snapshot?.baseline ?? {}
+    const skillRoot = typeof baseline.skillRoot === "string" ? baseline.skillRoot : ""
+    const skillLabel = (skillRoot.split("/").filter(Boolean).at(-1) || baseline.skillId || "Skill")
+        .slice(0, 80)
+    const runId = String(run.id ?? "")
+    const runLabel = /^[a-f0-9]{8}-[a-f0-9-]+$/iu.test(runId)
+        ? runId.slice(0, 8)
+        : runId.slice(0, 40)
+    return `Skill 自动优化 · ${skillLabel} · ${runLabel}`
+}
+
 function boundedArtifactValue(readArtifact, artifactId) {
     if (!artifactId) return null
     let value
@@ -365,6 +377,7 @@ class OptimizationControlService {
             runtimeId: snapshot.operator.runtimeId,
             modelId: snapshot.operator.modelId,
             effort: snapshot.operator.effort,
+            title: optimizationTaskTitle(run),
             objective: [
                 `Optimize frozen Run ${run.id}.`,
                 "Wait for an optimization Candidate or decision request, then use only the matching optimization.submit_* Tool.",
