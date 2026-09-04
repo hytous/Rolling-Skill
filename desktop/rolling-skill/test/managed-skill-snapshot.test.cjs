@@ -120,7 +120,9 @@ describe("managed Skill repository snapshots", () => {
         const first = snapshotManagedSkill(root)
         const unchanged = snapshotManagedSkill(root)
         writeFileSync(join(root, ".rolling-skill-managed.json"), "{\"version\":1}\n")
-        const withMarker = snapshotManagedSkill(root)
+        const withManagedMarker = snapshotManagedSkill(root)
+        writeFileSync(join(root, ".rolling-skill-experiment.json"), "{\"epoch\":1}\n")
+        const withExperimentMarker = snapshotManagedSkill(root)
         chmodSync(join(root, "scripts/run.sh"), 0o755)
         const executable = snapshotManagedSkill(root)
         writeFileSync(join(root, "references/guide.md"), "Changed guide")
@@ -128,8 +130,16 @@ describe("managed Skill repository snapshots", () => {
 
         assert.match(first.digest, /^sha256:[a-f0-9]{64}$/)
         assert.equal(first.digest, unchanged.digest)
-        assert.equal(first.digest, withMarker.digest)
-        assert.equal(withMarker.files.some((entry) => entry.path === ".rolling-skill-managed.json"), false)
+        assert.notEqual(first.digest, withManagedMarker.digest)
+        assert.notEqual(withManagedMarker.digest, withExperimentMarker.digest)
+        assert.equal(
+            withManagedMarker.files.some((entry) => entry.path === ".rolling-skill-managed.json"),
+            true,
+        )
+        assert.equal(
+            withExperimentMarker.files.some((entry) => entry.path === ".rolling-skill-experiment.json"),
+            true,
+        )
         assert.deepEqual(first.files.map((entry) => entry.path), [
             "SKILL.md",
             "references/guide.md",

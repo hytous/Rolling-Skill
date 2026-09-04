@@ -385,7 +385,6 @@ class ManagedSkillGit {
                   ? repositoryPathName.slice(skillRoot.length + 1)
                   : null
             if (!inside) continue
-            if (inside === ".rolling-skill-managed.json") continue
             if (inside.split("/").some((segment) => segment.toLowerCase() === ".git")) continue
             if (type !== "blob" || !new Set(["100644", "100755", "120000"]).has(mode)) {
                 throw new Error(`Unsupported Git tree entry in managed Skill: ${repositoryPathName}`)

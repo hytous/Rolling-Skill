@@ -9,8 +9,6 @@ const {
 } = require("node:fs")
 const {basename, dirname, isAbsolute, relative, resolve, sep} = require("node:path")
 const YAML = require("yaml")
-const MANAGED_INSTALL_MARKER = ".rolling-skill-managed.json"
-
 const DEFAULT_SCAN_LIMITS = Object.freeze({
     maxFiles: 10_000,
     maxTotalBytes: 256 * 1024 * 1024,
@@ -225,8 +223,7 @@ function snapshotManagedSkill(skillRoot, limits = {}) {
         limits,
     })
     const hash = createHash("sha256")
-    const digestRecords = walked.records.filter((record) => record.path !== MANAGED_INSTALL_MARKER)
-    for (const record of digestRecords) {
+    for (const record of walked.records) {
         const data = record.type === "file"
             ? readFileSync(record.absolutePath)
             : Buffer.from(record.linkTarget, "utf8")
@@ -236,7 +233,7 @@ function snapshotManagedSkill(skillRoot, limits = {}) {
     }
     return {
         digest: `sha256:${hash.digest("hex")}`,
-        files: digestRecords.map(publicFile),
+        files: walked.records.map(publicFile),
         totalBytes: walked.totalBytes,
     }
 }

@@ -287,6 +287,7 @@ describe("managed Skill Git service", () => {
         mkdirSync(join(repository, "references"))
         writeFileSync(join(repository, "references", "ignored.md"), "Committed reference\n")
         writeFileSync(join(repository, ".rolling-skill-managed.json"), "{\"version\":1}\n")
+        writeFileSync(join(repository, ".rolling-skill-experiment.json"), "{\"epoch\":1}\n")
         const commit = await git.commitAll(repository, "Candidate", {forcePaths: ["."]})
 
         writeSkill(repository, "Later Working body")
@@ -296,6 +297,8 @@ describe("managed Skill Git service", () => {
         assert.match(snapshot.digest, /^sha256:[a-f0-9]{64}$/)
         assert.deepEqual(snapshot.files.map((entry) => entry.path), [
             ".gitignore",
+            ".rolling-skill-experiment.json",
+            ".rolling-skill-managed.json",
             "SKILL.md",
             "references/ignored.md",
         ])
