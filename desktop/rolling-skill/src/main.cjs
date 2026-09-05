@@ -58,6 +58,10 @@ const {
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {ManagedSkillManager} = require("./managed-skill-manager.cjs")
 const {ManagedSkillStore} = require("./managed-skill-store.cjs")
+const {
+    managedDatasetSkillReference,
+    resolveManagedCurationOperation,
+} = require("./managed-curation-operation.cjs")
 const {requireGitSourceLocation} = require("./managed-skill-git.cjs")
 const {normalizedSkillName, RawCaseStore} = require("./raw-case-store.cjs")
 const {SkillInstallationManager} = require("./skill-installation-manager.cjs")
@@ -848,6 +852,33 @@ async function requireAvailableDatasetSkill(dataset) {
     }
     await currentRuntimeSkillReference(dataset.skillReference)
     return dataset.skillReference
+}
+
+function managedCurationOperationForDataset(dataset, options = {}) {
+    return resolveManagedCurationOperation({
+        dataset,
+        runtime: runtimeDescriptor,
+        managedSkillStore,
+        installationStore: skillInstallationStore,
+        ...options,
+    })
+}
+
+function createManagedCurationManager(manager) {
+    return {
+        createSession(input = {}) {
+            const dataset = store.getDataset(input.datasetId)
+            const operation = managedCurationOperationForDataset(dataset)
+            return manager.createSession({...input, ...operation})
+        },
+        listSessions({archived = false} = {}) {
+            return archived
+                ? store.listArchivedCurationSessions()
+                : store.listCurationSessions()
+        },
+        retry: (sessionId) => manager.retry(sessionId),
+        archive: (sessionId) => manager.archive(sessionId),
+    }
 }
 
 function requirePublishedDatasetRubric(dataset) {
@@ -3006,8 +3037,8 @@ async function createCurationFromRawCase(input = {}) {
     if (!sameAutomaticSkill(dataset.skillReference, rawCase.skill)) {
         throw new Error("The selected dataset is bound to a different Skill")
     }
-    await requireAvailableDatasetSkill(dataset)
     requirePublishedDatasetRubric(dataset)
+    const operation = managedCurationOperationForDataset(dataset)
     const curatorProfile = store.read().settings.curatorProfile
     const session = await curationManager.createSession({
         datasetId,
@@ -3025,6 +3056,7 @@ async function createCurationFromRawCase(input = {}) {
         }) ?? null,
         modelId: curatorProfile.modelId,
         effort: curatorProfile.effort,
+        ...operation,
     })
     rawCaseStore.markDispatched(rawCase.id, {
         mode: "curation",
@@ -3511,13 +3543,13 @@ function installIpc() {
     ipcMain.handle("datasets:create", async (_event, input = {}) =>
         store.createDataset({
             name: input.name,
-            skillReference: await currentRuntimeSkillReference(input.skillReference),
+            skillReference: managedDatasetSkillReference(input, {managedSkillStore}),
         }),
     )
-    ipcMain.handle("datasets:bind-skill", async (_event, input = {}) =>
+    ipcMain.handle("datasets:bind-skill", (_event, input = {}) =>
         store.bindDatasetSkill(
             requireIdentifier(input.datasetId, "dataset"),
-            await currentRuntimeSkillReference(input.skillReference),
+            managedDatasetSkillReference(input, {managedSkillStore}),
         ),
     )
     ipcMain.handle("datasets:delete", (_event, input = {}) =>
@@ -3616,8 +3648,11 @@ function installIpc() {
     ipcMain.handle("rubrics:create", async (_event, input = {}) => {
         const datasetId = requireIdentifier(input.datasetId, "dataset")
         const dataset = store.getDataset(datasetId)
-        await requireAvailableDatasetSkill(dataset)
-        const skillEvidence = snapshotSkillEvidence(dataset.skillReference)
+        const operation = managedCurationOperationForDataset(dataset, {
+            kind: "rubric",
+            requireRubric: false,
+        })
+        const skillEvidence = snapshotSkillEvidence(operation.executionSkillReference)
         if (skillEvidence.truncated || skillEvidence.warnings.length) {
             const details = skillEvidence.warnings.length
                 ? skillEvidence.warnings.map((warning) => `- ${warning}`).join("\n")
@@ -3631,6 +3666,7 @@ function installIpc() {
             skillEvidence,
             modelId: profile.modelId,
             effort: profile.effort,
+            ...operation,
         })
     })
     ipcMain.handle("rubrics:send", (_event, input = {}) =>
@@ -3669,8 +3705,8 @@ function installIpc() {
     ipcMain.handle("curation:create", async (_event, input = {}) => {
         const datasetId = requireIdentifier(input.datasetId, "dataset")
         const dataset = store.getDataset(datasetId)
-        await requireAvailableDatasetSkill(dataset)
         requirePublishedDatasetRubric(dataset)
+        const operation = managedCurationOperationForDataset(dataset)
         const sourceThreadId = requireIdentifier(input.sourceThreadId, "source thread")
         const startItemId = input.startItemId
             ? requireIdentifier(input.startItemId, "episode start item")
@@ -3709,6 +3745,7 @@ function installIpc() {
             traceReference,
             modelId: profile.modelId,
             effort: profile.effort,
+            ...operation,
         })
     })
     ipcMain.handle("curation:create-calibration", async (_event, input = {}) => {
@@ -3997,6 +4034,9 @@ if (!hasLock) {
             curationManager,
             getRuntime: ensureRuntime,
             getRuntimeDescriptor: () => runtimeDescriptor,
+            resolveOperation: (datasetId) => managedCurationOperationForDataset(
+                store.getDataset(datasetId),
+            ),
         })
         rubricManager = new RubricManager({
             store,
@@ -4009,7 +4049,7 @@ if (!hasLock) {
             store,
             stateStore: automaticCaptureStateStore,
             rawCaseStore,
-            curationManager,
+            curationManager: createManagedCurationManager(curationManager),
             getRuntime: ensureRuntime,
             getRuntimeDescriptor: () => runtimeDescriptor,
             listDatasets: () => store.listDatasets(),

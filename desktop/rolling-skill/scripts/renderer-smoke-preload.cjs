@@ -1548,7 +1548,23 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }],
     }),
     listDatasets: async () => fakeControlPage("datasets.list", {}, "datasets"),
-    createDataset: async ({name, skillReference}) => {
+    createDataset: async ({name, repositoryId, skillId}) => {
+        const skill = [smokeManagedSkill, smokeManagedSkillTwo]
+            .find((entry) => entry.id === skillId && entry.repositoryId === repositoryId)
+        if (!skill) throw new Error("Unknown managed Skill")
+        const skillReference = {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: skill.id,
+            repositoryId: skill.repositoryId,
+            name: skill.name,
+            path: null,
+            scope: "managed",
+            description: skill.description,
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: new Date().toISOString(),
+        }
         const dataset = {
             id: `dataset-smoke-${smokeDatasets.length + 1}`,
             name,
@@ -1560,7 +1576,23 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         smokeDatasets = [...smokeDatasets, dataset]
         return dataset
     },
-    bindDatasetSkill: async (datasetId, skillReference) => {
+    bindDatasetSkill: async (datasetId, {repositoryId, skillId}) => {
+        const skill = [smokeManagedSkill, smokeManagedSkillTwo]
+            .find((entry) => entry.id === skillId && entry.repositoryId === repositoryId)
+        if (!skill) throw new Error("Unknown managed Skill")
+        const skillReference = {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: skill.id,
+            repositoryId: skill.repositoryId,
+            name: skill.name,
+            path: null,
+            scope: "managed",
+            description: skill.description,
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: new Date().toISOString(),
+        }
         smokeDatasets = smokeDatasets.map((dataset) =>
             dataset.id === datasetId ? {...dataset, skillReference} : dataset,
         )

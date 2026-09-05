@@ -217,8 +217,12 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     deleteCase: (datasetId, caseId, recoverQuestions = true) =>
         ipcRenderer.invoke("datasets:delete-case", {datasetId, caseId, recoverQuestions}),
     createDataset: (input) => ipcRenderer.invoke("datasets:create", input),
-    bindDatasetSkill: (datasetId, skillReference) =>
-        ipcRenderer.invoke("datasets:bind-skill", {datasetId, skillReference}),
+    bindDatasetSkill: (datasetId, skillBinding) =>
+        ipcRenderer.invoke("datasets:bind-skill", {
+            datasetId,
+            repositoryId: skillBinding.repositoryId,
+            skillId: skillBinding.skillId,
+        }),
     exportDatasetCsv: (input) => ipcRenderer.invoke("datasets:export-csv", input),
     deleteDataset: (datasetId, recoverQuestions = true) =>
         ipcRenderer.invoke("datasets:delete", {datasetId, recoverQuestions}),

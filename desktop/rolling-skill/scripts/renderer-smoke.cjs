@@ -1442,6 +1442,35 @@ async function run() {
         document.querySelector("[data-save-case]")?.click()
     })()`)
     await waitFor(window, 'document.querySelector("#save-case-dialog")?.open')
+    const managedCurationTarget = await inspect(window, `(() => ({
+        changeButtonMissing: !document.querySelector("#change-case-dataset-skill"),
+        datasetSkill: document.querySelector("#case-dataset-skill-status")?.textContent,
+        newDatasetSkillValue: document.querySelector("#new-dataset-skill")?.value,
+        newDatasetSkillOptions: [...document.querySelectorAll("#new-dataset-skill option")]
+            .map((option) => option.value),
+    }))()`)
+    if (!managedCurationTarget.changeButtonMissing ||
+        !managedCurationTarget.datasetSkill.includes("billing-cost-management") ||
+        !managedCurationTarget.newDatasetSkillValue.startsWith("managed:") ||
+        managedCurationTarget.newDatasetSkillOptions.some((value) => value && !value.startsWith("managed:"))) {
+        throw new Error(`Manual curation did not derive its target from managed Skills: ${JSON.stringify(managedCurationTarget)}`)
+    }
+    const switchedDatasetSkill = await inspect(window, `(() => {
+        const dataset = document.querySelector("#case-dataset")
+        dataset.value = "optimization-dataset-smoke"
+        dataset.dispatchEvent(new Event("change", {bubbles: true}))
+        const switched = document.querySelector("#case-dataset-skill-status")?.textContent
+        dataset.value = "dataset-smoke"
+        dataset.dispatchEvent(new Event("change", {bubbles: true}))
+        return {
+            switched,
+            restored: document.querySelector("#case-dataset-skill-status")?.textContent,
+        }
+    })()`)
+    if (!switchedDatasetSkill.switched.includes("billing-cost-analysis") ||
+        !switchedDatasetSkill.restored.includes("billing-cost-management")) {
+        throw new Error(`Dataset selection did not update its bound managed Skill: ${JSON.stringify(switchedDatasetSkill)}`)
+    }
     if ((await inspect(window, 'document.querySelector("#case-issue-description")?.value')) !== "") {
         throw new Error("The optional issue description was prefilled from the source question")
     }
@@ -1455,8 +1484,11 @@ async function run() {
     const curationCloseLocked = await inspect(window, `(() => ({
         close: document.querySelector("#close-case-dialog")?.disabled,
         cancel: document.querySelector("#cancel-save-case")?.disabled,
+        label: document.querySelector("#confirm-save-case")?.textContent,
+        busy: document.querySelector("#confirm-save-case")?.getAttribute("aria-busy"),
     }))()`)
-    if (!curationCloseLocked.close || !curationCloseLocked.cancel) {
+    if (!curationCloseLocked.close || !curationCloseLocked.cancel ||
+        !curationCloseLocked.label.includes("正在启动") || curationCloseLocked.busy !== "true") {
         throw new Error("Case dialog can close while curation creation is pending")
     }
     await waitFor(window, '!document.querySelector("#case-create-error")?.classList.contains("hidden")')

@@ -150,10 +150,31 @@ describe("desktop main/preload bridge", () => {
 
         assert.match(main, /datasets:bind-skill/)
         assert.match(preload, /bindDatasetSkill/)
+        assert.match(main, /managedDatasetSkillReference/)
+        assert.match(main, /resolveManagedCurationOperation/)
+        assert.match(main, /const operation = managedCurationOperationForDataset\(dataset\)/)
+        assert.match(main, /curationManager\.createSession\(\{[\s\S]*?\.\.\.operation,/)
+        assert.match(main, /createManagedCurationManager\(curationManager\)/)
+        assert.match(
+            main,
+            /rubrics:create[\s\S]*?managedCurationOperationForDataset\(dataset, \{[\s\S]*?kind: "rubric"[\s\S]*?requireRubric: false/,
+        )
+        assert.match(main, /snapshotSkillEvidence\(operation\.executionSkillReference\)/)
+        assert.match(main, /rubricManager\.createSession\(\{[\s\S]*?\.\.\.operation,/)
         assert.match(main, /const dataset = store\.getDataset\(/)
         assert.match(main, /const skillReference = dataset\.skillReference/)
         assert.doesNotMatch(main, /requireAbsolutePath\(input\.skillPath, "Skill"\)/)
         assert.doesNotMatch(main, /input\.skillReference\?\.name/)
+        assert.doesNotMatch(
+            main,
+            /datasets:create[\s\S]{0,300}currentRuntimeSkillReference/,
+        )
+        assert.doesNotMatch(
+            main,
+            /datasets:bind-skill[\s\S]{0,300}currentRuntimeSkillReference/,
+        )
+        assert.match(preload, /repositoryId:\s*skillBinding\.repositoryId/)
+        assert.match(preload, /skillId:\s*skillBinding\.skillId/)
     })
 
     it("exposes the dataset Rubric lifecycle and freezes it into formal runs", () => {

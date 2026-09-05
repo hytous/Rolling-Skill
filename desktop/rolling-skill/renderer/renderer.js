@@ -104,15 +104,17 @@ const translations = {
         automaticDataset: "Target dataset",
         selectDataset: "Select dataset",
         automaticTargetsRequired: "Select at least one available Skill and target dataset while automatic capture is enabled.",
-        selectSkill: "Select an enabled Skill",
-        unavailableSkill: "Previously selected Skill is unavailable",
+        selectSkill: "Select a managed Skill",
+        unavailableSkill: "Previously selected managed Skill is unavailable",
         datasetSkill: "Dataset Skill",
         bindDatasetSkill: "Bind dataset Skill",
         changeSkill: "Change Skill",
         datasetSkillHistoryHelp: "Existing Cases and evaluation runs keep their frozen historical evidence.",
-        datasetSkillUnbound: "This dataset has no Skill binding. Bind an enabled runtime Skill before capture or evaluation.",
-        datasetSkillStale: "{name} is bound, but its exact name and path are not enabled in the active runtime.",
+        datasetSkillUnbound: "This dataset has no managed Skill binding.",
+        datasetSkillStale: "{name} is bound, but its Released version is not verified as installed in the active Runtime.",
         datasetSkillReady: "{name} · installed and enabled in {runtime}",
+        noManagedSkills: "No managed Skills are available. Import one in Skill management first.",
+        managedSkillNotReleased: "This managed Skill has no Released version available for curation.",
         datasetRubric: "Dataset rubric",
         datasetRubricHelp: "Shared Skill-specific criteria inherited by every Case.",
         manageRubric: "Manage",
@@ -182,7 +184,7 @@ const translations = {
         refreshBatchStopped: "Automatic Case refresh stopped",
         refreshBatchFailed: "Automatic Case refresh paused: {message}",
         refreshBatchContextChanged: "The dataset or Case changed during automatic refresh.",
-        datasetSkillRequired: "Select an enabled Skill for this dataset.",
+        datasetSkillRequired: "Select a managed Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
         destinationDataset: "Destination dataset",
@@ -269,6 +271,7 @@ const translations = {
         endingResponse: "Selected ending response",
         frozenCopyHelp: "A frozen copy goes to Curator; the original task stays live.",
         startCuration: "Start curation",
+        startingCuration: "Starting…",
         welcomeHeading: "What should we evaluate?",
         welcomeCopy: "Run a task through a compatible local agent runtime, then curate a complete problem-solving episode into a reviewable goodcase or badcase.",
         runtimeDiscovery: "Runtime auto-discovery",
@@ -937,15 +940,17 @@ const translations = {
         automaticDataset: "目标数据集",
         selectDataset: "选择数据集",
         automaticTargetsRequired: "开启自动沉淀时，请至少选择一个可用 Skill 及其目标数据集。",
-        selectSkill: "请选择一个已启用的 Skill",
-        unavailableSkill: "之前选择的 Skill 当前不可用",
+        selectSkill: "请选择一个受管 Skill",
+        unavailableSkill: "之前选择的受管 Skill 当前不可用",
         datasetSkill: "数据集绑定的 Skill",
         bindDatasetSkill: "绑定数据集 Skill",
         changeSkill: "更换 Skill",
         datasetSkillHistoryHelp: "已有 Case 和评测记录会继续保留各自冻结的历史证据，不会被改写。",
-        datasetSkillUnbound: "这个数据集尚未绑定 Skill；沉淀或评测前请绑定当前运行时中已启用的 Skill。",
-        datasetSkillStale: "已绑定 {name}，但当前运行时没有启用名称与路径完全一致的 Skill。",
+        datasetSkillUnbound: "这个数据集尚未绑定受管 Skill。",
+        datasetSkillStale: "已绑定 {name}，但当前 Runtime 中没有与 Released 版本一致的已验证安装。",
         datasetSkillReady: "{name} · 已安装并在 {runtime} 中启用",
+        noManagedSkills: "暂无可用的受管 Skill，请先到 Skill 管理中导入。",
+        managedSkillNotReleased: "这个受管 Skill 尚无可用于沉淀的 Released 版本。",
         datasetRubric: "数据集评分标准",
         datasetRubricHelp: "由 Skill 派生，并被该数据集的所有 Case 继承。",
         manageRubric: "管理标准",
@@ -1015,7 +1020,7 @@ const translations = {
         refreshBatchStopped: "已停止批量更新",
         refreshBatchFailed: "批量更新已暂停：{message}",
         refreshBatchContextChanged: "批量更新期间数据集或 Case 已发生变化。",
-        datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
+        datasetSkillRequired: "请为这个数据集选择一个受管 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
         destinationDataset: "目标数据集",
@@ -1102,6 +1107,7 @@ const translations = {
         endingResponse: "选中的结束回答",
         frozenCopyHelp: "冻结副本会交给 Curator，原任务仍可继续使用。",
         startCuration: "开始沉淀",
+        startingCuration: "正在启动…",
         welcomeHeading: "今天要评测什么？",
         welcomeCopy: "通过本地 Agent 运行时执行任务，再把完整的问题解决片段沉淀为可审核的 Goodcase 或 Badcase。",
         runtimeDiscovery: "自动发现运行时",
@@ -2033,7 +2039,6 @@ const elements = {
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
     caseDatasetSkillStatus: document.querySelector("#case-dataset-skill-status"),
-    changeCaseDatasetSkill: document.querySelector("#change-case-dataset-skill"),
     newDatasetName: document.querySelector("#new-dataset-name"),
     newDatasetSkill: document.querySelector("#new-dataset-skill"),
     createDataset: document.querySelector("#create-dataset"),
@@ -2484,6 +2489,66 @@ function populateSkillSelect(select, selectedKey = null, {allowEmpty = true} = {
     }
 }
 
+function managedSkillSelectionKey(skill) {
+    if (!skill?.repositoryId || !skill?.id) return null
+    return `managed:${skill.repositoryId}:${skill.id}`
+}
+
+function managedSkillBySelectionKey(key) {
+    return state.managedSkills.skills.find(
+        (skill) => managedSkillSelectionKey(skill) === key,
+    ) ?? null
+}
+
+function managedSkillDisplayLabel(skill) {
+    const repository = managedRepositoryById(skill.repositoryId)
+    const duplicate = state.managedSkills.skills.some(
+        (entry) => entry.id !== skill.id && entry.name === skill.name,
+    )
+    return duplicate && repository?.displayName
+        ? `${skill.name} · ${repository.displayName}`
+        : skill.name
+}
+
+function populateManagedSkillSelect(select, selectedKey = null, {allowEmpty = true} = {}) {
+    select.replaceChildren()
+    if (allowEmpty) {
+        const empty = node("option", "", t("selectSkill"))
+        empty.value = ""
+        select.append(empty)
+    }
+    const skills = state.managedSkills.skills
+        .filter((skill) => skill.status === "valid")
+        .slice()
+        .sort((left, right) => managedSkillDisplayLabel(left).localeCompare(
+            managedSkillDisplayLabel(right),
+            state.settings.language,
+        ))
+    for (const skill of skills) {
+        const option = node("option", "", managedSkillDisplayLabel(skill))
+        option.value = managedSkillSelectionKey(skill)
+        select.append(option)
+    }
+    if (selectedKey && managedSkillBySelectionKey(selectedKey)?.status === "valid") {
+        select.value = selectedKey
+    } else if (selectedKey) {
+        const unavailable = node("option", "", t("unavailableSkill"))
+        unavailable.value = selectedKey
+        unavailable.disabled = true
+        select.append(unavailable)
+        select.value = selectedKey
+    } else {
+        select.value = allowEmpty
+            ? ""
+            : managedSkillSelectionKey(skills[0]) ?? ""
+    }
+}
+
+function managedSkillBindingFromSelect(select) {
+    const skill = managedSkillBySelectionKey(select.value)
+    return skill ? {repositoryId: skill.repositoryId, skillId: skill.id} : null
+}
+
 function selectedDataset(datasetId) {
     return state.datasets.find((dataset) => dataset.id === datasetId) ?? null
 }
@@ -2555,8 +2620,6 @@ function renderDatasetSkillStatus(element, dataset) {
 function renderCaseDatasetSkillStatus() {
     const dataset = selectedDataset(elements.caseDataset.value)
     const skill = renderDatasetSkillStatus(elements.caseDatasetSkillStatus, dataset)
-    elements.changeCaseDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
-    elements.changeCaseDatasetSkill.disabled = !dataset
     if (!state.caseCreationInProgress) {
         elements.confirmSaveCase.disabled = !skill || !dataset?.activeRubricVersionId
     }
@@ -4998,11 +5061,15 @@ function clearCaseError() {
 }
 
 function showCaseError(error) {
-    const message = error?.message || String(error)
-    elements.caseCreateError.textContent = message.replace(
+    const message = (error?.message || String(error)).replace(
         /^Error invoking remote method '[^']+': Error:\s*/u,
         "",
     )
+    elements.caseCreateError.textContent = /current Runtime has no verified Skill installation/iu.test(message)
+        ? t("datasetSkillStale")
+        : /Released managed Skill version/iu.test(message)
+          ? t("managedSkillNotReleased")
+          : message
     elements.caseCreateError.classList.remove("hidden")
     elements.caseCreateError.scrollIntoView({block: "nearest"})
 }
@@ -5010,8 +5077,12 @@ function showCaseError(error) {
 function setCaseCreationInProgress(inProgress) {
     state.caseCreationInProgress = Boolean(inProgress)
     elements.confirmSaveCase.disabled = state.caseCreationInProgress
+    elements.confirmSaveCase.textContent = t(inProgress ? "startingCuration" : "startCuration")
+    if (inProgress) elements.confirmSaveCase.setAttribute("aria-busy", "true")
+    else elements.confirmSaveCase.removeAttribute("aria-busy")
     elements.closeCaseDialog.disabled = state.caseCreationInProgress
     elements.cancelSaveCase.disabled = state.caseCreationInProgress
+    if (!inProgress) renderCaseDatasetSkillStatus()
 }
 
 let toastTimer = null
@@ -6317,7 +6388,7 @@ function renderEvaluationWorkbench() {
         elements.evaluationCaseList.append(row)
     }
 
-    populateSkillSelect(
+    populateManagedSkillSelect(
         elements.evaluationNewDatasetSkill,
         elements.evaluationNewDatasetSkill.value,
         {allowEmpty: false},
@@ -7297,11 +7368,9 @@ async function createEvaluationDataset() {
     const name = elements.evaluationNewDatasetName.value.trim()
     if (!name) return
     try {
-        const skillReference = skillReferenceFromRuntimeSkill(
-            runtimeSkillBySelectionKey(elements.evaluationNewDatasetSkill.value),
-        )
-        if (!skillReference) throw new Error(t("datasetSkillRequired"))
-        const dataset = await window.rollingSkill.createDataset({name, skillReference})
+        const skillBinding = managedSkillBindingFromSelect(elements.evaluationNewDatasetSkill)
+        if (!skillBinding) throw new Error(t("datasetSkillRequired"))
+        const dataset = await window.rollingSkill.createDataset({name, ...skillBinding})
         elements.evaluationNewDatasetName.value = ""
         state.evaluationDatasetId = dataset.id
         await loadEvaluationWorkbench(false)
@@ -8224,8 +8293,8 @@ async function openCaseDialog(turnId, itemId) {
         return
     }
     if (state.activeThreadId !== sourceThreadId) return
-    if (!state.evaluationSkills.length) {
-        showError(new Error(t("noSkills")))
+    if (!state.managedSkills.skills.some((skill) => skill.status === "valid")) {
+        showError(new Error(t("noManagedSkills")))
         return
     }
     state.caseSelection = {
@@ -8251,7 +8320,7 @@ async function openCaseDialog(turnId, itemId) {
     elements.caseIssueDescription.value = ""
     updateEpisodeStartPreview()
     updateDatasetOptions(state.datasets[0]?.id)
-    populateSkillSelect(elements.newDatasetSkill, elements.newDatasetSkill.value, {allowEmpty: false})
+    populateManagedSkillSelect(elements.newDatasetSkill, elements.newDatasetSkill.value, {allowEmpty: false})
     renderCaseDatasetSkillStatus()
     clearCaseError()
     suspendThreadObservation()
@@ -8263,11 +8332,9 @@ async function createDataset() {
     if (!name) return
     elements.createDataset.disabled = true
     try {
-        const skillReference = skillReferenceFromRuntimeSkill(
-            runtimeSkillBySelectionKey(elements.newDatasetSkill.value),
-        )
-        if (!skillReference) throw new Error(t("datasetSkillRequired"))
-        const created = await window.rollingSkill.createDataset({name, skillReference})
+        const skillBinding = managedSkillBindingFromSelect(elements.newDatasetSkill)
+        if (!skillBinding) throw new Error(t("datasetSkillRequired"))
+        const created = await window.rollingSkill.createDataset({name, ...skillBinding})
         state.datasets = await window.rollingSkill.listDatasets()
         updateDatasetOptions(created.id)
         elements.newDatasetName.value = ""
@@ -8283,9 +8350,9 @@ function openDatasetSkillDialog(datasetId) {
     const dataset = selectedDataset(datasetId)
     if (!dataset) return
     state.datasetSkillDialogDatasetId = datasetId
-    populateSkillSelect(
+    populateManagedSkillSelect(
         elements.datasetSkillSelect,
-        runtimeSkillSelectionKey(runtimeSkillForReference(dataset.skillReference)),
+        managedSkillSelectionKey(managedSkillById(dataset.skillReference?.id)),
         {allowEmpty: false},
     )
     elements.datasetSkillDialogCopy.textContent = formatMessage("changeDatasetSkillCopy", {
@@ -8296,13 +8363,11 @@ function openDatasetSkillDialog(datasetId) {
 
 async function bindDatasetSkill() {
     const datasetId = state.datasetSkillDialogDatasetId
-    const skillReference = skillReferenceFromRuntimeSkill(
-        runtimeSkillBySelectionKey(elements.datasetSkillSelect.value),
-    )
-    if (!datasetId || !skillReference) return
+    const skillBinding = managedSkillBindingFromSelect(elements.datasetSkillSelect)
+    if (!datasetId || !skillBinding) return
     elements.confirmDatasetSkill.disabled = true
     try {
-        await window.rollingSkill.bindDatasetSkill(datasetId, skillReference)
+        await window.rollingSkill.bindDatasetSkill(datasetId, skillBinding)
         state.datasets = await window.rollingSkill.listDatasets()
         elements.datasetSkillDialog.close()
         updateDatasetOptions(elements.caseDataset.value)
@@ -8323,7 +8388,7 @@ async function createCuration() {
     const caseType = new FormData(elements.caseForm).get("case-type")
     const issueDescription = elements.caseIssueDescription.value.trim()
     const dataset = selectedDataset(elements.caseDataset.value)
-    if (!runtimeSkillForReference(dataset?.skillReference)) {
+    if (!dataset?.skillReference || !runtimeSkillForReference(dataset.skillReference)) {
         showCaseError(new Error(t("datasetSkillRequired")))
         return
     }
@@ -9735,9 +9800,6 @@ elements.caseDialog.addEventListener("cancel", (event) => {
 })
 elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
 elements.caseDataset.addEventListener("change", renderCaseDatasetSkillStatus)
-elements.changeCaseDatasetSkill.addEventListener("click", () =>
-    openDatasetSkillDialog(elements.caseDataset.value),
-)
 elements.createDataset.addEventListener("click", createDataset)
 elements.caseForm.addEventListener("submit", (event) => {
     event.preventDefault()
