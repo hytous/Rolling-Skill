@@ -349,6 +349,7 @@ segments and no pending range. Return JSON only with this exact schema:
         },
         enabledSkills: skills.map((skill) => ({
           name: String(skill?.name ?? ""),
+          description: String(skill?.description ?? "").slice(0, 4e3),
           path: skill?.path ? String(skill.path) : null,
           runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null
         })),
@@ -362,15 +363,17 @@ segments and no pending range. Return JSON only with this exact schema:
         }))
       };
       return `Decide whether this completed episode is eligible to become a Skill evaluation Case.
+The supplied enabledSkills list is the complete user-selected managed Skill target set. Do not infer any other local or system Skill, even when the episode resembles or mentions it; if no listed Skill clearly applies, mark the episode ineligible.
+A human-authored request is necessary but not sufficient. Apply this counterfactual domain check: would the originalQuestion require invoking the selected Skill for the domain described in enabledSkills if Rolling Skill, Dataset, Runtime, and automation controls were removed from context? If no, mark it ineligible. Generic word overlap is not domain evidence: debugging an optimization button is not a cost optimization task, and configuring a Dataset for a Skill is not a task for that Skill.
 A Case must be a human-authored real-world problem intended for one enabled Skill. Exclude Rolling
 Skill internal orchestration, automatic detection, Curator, Rubric, Judge, Case refresh, evaluation,
 optimization, Skill installation/audit/maintenance, generated agent-to-agent prompts, and test
 fixtures. Embedded source questions, Skill names, rubrics, or successful outputs do not make an
 internal task eligible. For an ineligible episode set skillName and caseType to null. Otherwise
-judge the purpose and provenance of the request, not just the product names it mentions. A
-human requesting incident triage or a postmortem for a malfunctioning internal tool is a human
-task, even when the affected tool is Rolling Skill; it is not a generated Rubric/Curator/Judge
-instruction. Keep generated orchestration and synthetic test fixtures excluded.
+judge the purpose and provenance of the request, not just the product names it mentions. A human
+incident report about Rolling Skill can use sourceKind human_task, but it remains ineligible unless
+the originalQuestion itself is in an enabled Skill's described domain. Keep generated orchestration
+and synthetic test fixtures excluded.
 Identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item. Copy
 finalAssistantItemId exactly from a supplied agentMessage id; use null if no exact id applies.
 Return JSON only with this exact schema:
@@ -41602,6 +41605,8 @@ var require_automatic_capture = __commonJS({
     var MAX_TIMER_DELAY = 2147e6;
     var AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8;
     var AUTOMATIC_CURATION_ROUTE_ERROR = "Automatic curation requires one compatible Dataset with a published Rubric";
+    var AUTOMATIC_TARGET_SCOPE_ERROR = "Select at least one managed Skill and Dataset target before running automatic capture";
+    var AUTOMATIC_TARGET_RUNTIME_ERROR = "Install every selected managed Skill in the source Runtime before running automatic capture";
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -41654,6 +41659,16 @@ var require_automatic_capture = __commonJS({
     }
     function explicitTargetAcceptsSkill(skill, datasets, targets) {
       return arrays(targets).some((target) => arrays(datasets).some((dataset) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id && sameAutomaticSkill(dataset.skillReference, skill)));
+    }
+    function automaticProfileAcceptsSkill(profile, datasets, skill) {
+      return profile?.mode !== "off" && arrays(profile?.targets).length > 0 && explicitTargetAcceptsSkill(skill, datasets, profile.targets);
+    }
+    function managedCandidateSkill(skill, datasets) {
+      const references = arrays(datasets).map((dataset) => dataset?.skillReference).filter((reference2) => reference2?.id && sameAutomaticSkill(reference2, skill));
+      const unique = new Map(references.map((reference2) => [reference2.id, reference2]));
+      if (unique.size !== 1) return null;
+      const reference = [...unique.values()][0];
+      return { id: reference.id, name: reference.name };
     }
     function automaticTargetsReady(targets, datasets) {
       const selected = arrays(targets);
@@ -41965,18 +41980,25 @@ var require_automatic_capture = __commonJS({
         this.stateStore.beginSlot(slot, this.now());
         this.progress = { stage: "listing", startedAt: this.now().toISOString(), totalThreads: 0, completedThreads: 0, analysisCount: 0 };
         this.emitStatus();
+        const targets = arrays(profile.targets);
+        if (!targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR);
         const runtime = await this.getRuntime();
         const runtimeId = runtimeIdFrom(this.getRuntimeDescriptor());
-        const [threads, skillsValue, datasetsValue] = await Promise.all([
-          this.listAllThreads(runtime),
+        const [skillsValue, datasetsValue] = await Promise.all([
           this.listSkills(runtime),
           Promise.resolve(this.listDatasets())
         ]);
         const skills = arrays(skillsValue);
         const datasets = arrays(datasetsValue);
-        const targets = arrays(profile.targets);
-        const scopedDatasets = targets.length ? datasets.filter((dataset) => targets.some((target) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id)) : datasets;
-        const scopedSkills = targets.length ? skills.filter((skill) => scopedDatasets.some((dataset) => sameAutomaticSkill(dataset.skillReference, skill))) : skills;
+        const scopedDatasets = datasets.filter((dataset) => targets.some((target) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id));
+        if (scopedDatasets.length !== targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR);
+        const scopedSkills = skills.filter((skill) => scopedDatasets.some((dataset) => sameAutomaticSkill(dataset.skillReference, skill)));
+        if (!scopedDatasets.every((dataset) => scopedSkills.some((skill) => sameAutomaticSkill(dataset.skillReference, skill)))) throw new Error(AUTOMATIC_TARGET_RUNTIME_ERROR);
+        const names = scopedSkills.map((skill) => normalizedSkillName(skill.name));
+        if (new Set(names).size !== names.length) {
+          throw new Error("Automatic capture has an ambiguous managed Skill name");
+        }
+        const threads = await this.listAllThreads(runtime);
         const hidden = this.allHiddenThreadIds();
         const visibleThreads = threads.filter((summary) => summary?.id && !hidden.has(summary.id));
         this.progress.totalThreads = visibleThreads.length;
@@ -42159,6 +42181,13 @@ var require_automatic_capture = __commonJS({
         }
         const skill = matchingSkills[0] ?? null;
         if (!skill) return { irrelevant: true, episode, result };
+        const candidateSkill = managedCandidateSkill(skill, datasets);
+        if (!candidateSkill) return { irrelevant: true, skipReason: "invalid_target_scope", episode, result };
+        const currentProfile = this.profile();
+        const currentDatasets = arrays(await Promise.resolve(this.listDatasets()));
+        if (!automaticProfileAcceptsSkill(currentProfile, currentDatasets, candidateSkill)) {
+          return { irrelevant: true, skipReason: "stale_target_scope", episode, result };
+        }
         const finalItem = result.finalAssistantItemId ? episode.items.find((item) => item.id === result.finalAssistantItemId) : null;
         const endItemId = finalItem?.id ?? episode.source.endItemId;
         const endTurnId = finalItem?.turnId ?? episode.source.endTurnId;
@@ -42177,12 +42206,13 @@ var require_automatic_capture = __commonJS({
           reason: result.reason,
           inspectedAt: this.now().toISOString()
         };
-        const candidateSkill = {
-          ...skill.id ? { id: skill.id } : {},
-          name: skill.name
-        };
         const evidence = typeof this.saveEvidence === "function" ? await Promise.resolve(this.saveEvidence(episode)) : null;
         if (evidence) source.evidence = evidence;
+        const latestProfile = this.profile();
+        const latestDatasets = arrays(await Promise.resolve(this.listDatasets()));
+        if (!automaticProfileAcceptsSkill(latestProfile, latestDatasets, candidateSkill)) {
+          return { irrelevant: true, skipReason: "stale_target_scope", episode, result };
+        }
         const saved = this.rawCaseStore.addAutomaticCandidate({
           question: episode.originalQuestion,
           skill: candidateSkill,

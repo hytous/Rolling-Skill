@@ -21,6 +21,10 @@ const MAX_TIMER_DELAY = 2_147_000_000
 const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
 const AUTOMATIC_CURATION_ROUTE_ERROR =
     "Automatic curation requires one compatible Dataset with a published Rubric"
+const AUTOMATIC_TARGET_SCOPE_ERROR =
+    "Select at least one managed Skill and Dataset target before running automatic capture"
+const AUTOMATIC_TARGET_RUNTIME_ERROR =
+    "Install every selected managed Skill in the source Runtime before running automatic capture"
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -96,6 +100,22 @@ function explicitTargetAcceptsSkill(skill, datasets, targets) {
         target?.skillId === dataset.skillReference?.id &&
         sameAutomaticSkill(dataset.skillReference, skill)
     )))
+}
+
+function automaticProfileAcceptsSkill(profile, datasets, skill) {
+    return profile?.mode !== "off" &&
+        arrays(profile?.targets).length > 0 &&
+        explicitTargetAcceptsSkill(skill, datasets, profile.targets)
+}
+
+function managedCandidateSkill(skill, datasets) {
+    const references = arrays(datasets)
+        .map((dataset) => dataset?.skillReference)
+        .filter((reference) => reference?.id && sameAutomaticSkill(reference, skill))
+    const unique = new Map(references.map((reference) => [reference.id, reference]))
+    if (unique.size !== 1) return null
+    const reference = [...unique.values()][0]
+    return {id: reference.id, name: reference.name}
 }
 
 function automaticTargetsReady(targets, datasets) {
@@ -447,27 +467,32 @@ class ConversationDiscoveryManager {
         this.stateStore.beginSlot(slot, this.now())
         this.progress = {stage: "listing", startedAt: this.now().toISOString(), totalThreads: 0, completedThreads: 0, analysisCount: 0}
         this.emitStatus()
+        const targets = arrays(profile.targets)
+        if (!targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR)
         const runtime = await this.getRuntime()
         const runtimeId = runtimeIdFrom(this.getRuntimeDescriptor())
-        const [threads, skillsValue, datasetsValue] = await Promise.all([
-            this.listAllThreads(runtime),
+        const [skillsValue, datasetsValue] = await Promise.all([
             this.listSkills(runtime),
             Promise.resolve(this.listDatasets()),
         ])
         const skills = arrays(skillsValue)
         const datasets = arrays(datasetsValue)
-        const targets = arrays(profile.targets)
-        const scopedDatasets = targets.length
-            ? datasets.filter((dataset) => targets.some((target) => (
-                target?.datasetId === dataset.id &&
-                target?.skillId === dataset.skillReference?.id
-            )))
-            : datasets
-        const scopedSkills = targets.length
-            ? skills.filter((skill) => scopedDatasets.some((dataset) => (
-                sameAutomaticSkill(dataset.skillReference, skill)
-            )))
-            : skills
+        const scopedDatasets = datasets.filter((dataset) => targets.some((target) => (
+            target?.datasetId === dataset.id &&
+            target?.skillId === dataset.skillReference?.id
+        )))
+        if (scopedDatasets.length !== targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR)
+        const scopedSkills = skills.filter((skill) => scopedDatasets.some((dataset) => (
+            sameAutomaticSkill(dataset.skillReference, skill)
+        )))
+        if (!scopedDatasets.every((dataset) => scopedSkills.some((skill) => (
+            sameAutomaticSkill(dataset.skillReference, skill)
+        )))) throw new Error(AUTOMATIC_TARGET_RUNTIME_ERROR)
+        const names = scopedSkills.map((skill) => normalizedSkillName(skill.name))
+        if (new Set(names).size !== names.length) {
+            throw new Error("Automatic capture has an ambiguous managed Skill name")
+        }
+        const threads = await this.listAllThreads(runtime)
         const hidden = this.allHiddenThreadIds()
         const visibleThreads = threads.filter((summary) => summary?.id && !hidden.has(summary.id))
         this.progress.totalThreads = visibleThreads.length
@@ -671,6 +696,13 @@ class ConversationDiscoveryManager {
         }
         const skill = matchingSkills[0] ?? null
         if (!skill) return {irrelevant: true, episode, result}
+        const candidateSkill = managedCandidateSkill(skill, datasets)
+        if (!candidateSkill) return {irrelevant: true, skipReason: "invalid_target_scope", episode, result}
+        const currentProfile = this.profile()
+        const currentDatasets = arrays(await Promise.resolve(this.listDatasets()))
+        if (!automaticProfileAcceptsSkill(currentProfile, currentDatasets, candidateSkill)) {
+            return {irrelevant: true, skipReason: "stale_target_scope", episode, result}
+        }
         const finalItem = result.finalAssistantItemId
             ? episode.items.find((item) => item.id === result.finalAssistantItemId)
             : null
@@ -691,14 +723,15 @@ class ConversationDiscoveryManager {
             reason: result.reason,
             inspectedAt: this.now().toISOString(),
         }
-        const candidateSkill = {
-            ...(skill.id ? {id: skill.id} : {}),
-            name: skill.name,
-        }
         const evidence = typeof this.saveEvidence === "function"
             ? await Promise.resolve(this.saveEvidence(episode))
             : null
         if (evidence) source.evidence = evidence
+        const latestProfile = this.profile()
+        const latestDatasets = arrays(await Promise.resolve(this.listDatasets()))
+        if (!automaticProfileAcceptsSkill(latestProfile, latestDatasets, candidateSkill)) {
+            return {irrelevant: true, skipReason: "stale_target_scope", episode, result}
+        }
         const saved = this.rawCaseStore.addAutomaticCandidate({
             question: episode.originalQuestion,
             skill: candidateSkill,

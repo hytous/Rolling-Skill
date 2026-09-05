@@ -133,7 +133,12 @@ describe("scheduled conversation discovery helpers", () => {
                 toolActivity: [{type: "mcpToolCall", server: "billing", tool: "query", output: "tool output secret"}],
                 unrelatedHistory: "outside episode",
             },
-            skills: [{name: "billing-cost-management", path: "/skills/billing/SKILL.md", instructions: "skill secret"}],
+            skills: [{
+                name: "billing-cost-management",
+                path: "/skills/billing/SKILL.md",
+                description: "查询和分析云资源账单与成本",
+                instructions: "skill secret",
+            }],
             datasets: [{id: "dataset-1", name: "Billing", skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"}, cases: "dataset secret"}],
         })
 
@@ -144,6 +149,11 @@ describe("scheduled conversation discovery helpers", () => {
         assert.match(prompt, /eligibleForCase/u)
         assert.match(prompt, /human-authored|internal orchestration/iu)
         assert.match(prompt, /installation|Rubric|Curator|Judge/iu)
+        assert.match(prompt, /complete.*user-selected.*managed.*target/iu)
+        assert.match(prompt, /do not infer.*local.*system.*Skill/iu)
+        assert.match(prompt, /查询和分析云资源账单与成本/u)
+        assert.match(prompt, /originalQuestion.*require invoking.*selected Skill/iu)
+        assert.match(prompt, /optimization button.*cost optimization/iu)
     })
 
     it("strictly parses outcome classification and confidence", () => {

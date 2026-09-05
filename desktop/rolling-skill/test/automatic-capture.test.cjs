@@ -89,10 +89,29 @@ function fixture({
     captureEpisode = null,
     saveEvidence = null,
     skills = null,
+    targets = undefined,
 } = {}) {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-discovery-"))
     directories.push(directory)
     const stateStore = new AutomaticCaptureStateStore(join(directory, "capture-state.json"))
+    const availableDatasets = datasets ?? [{
+        id: "dataset-1",
+        name: "Billing",
+        skillReference: {
+            id: "skill-billing",
+            name: "billing-cost-management",
+            path: "/skills/billing/SKILL.md",
+        },
+    }]
+    const availableSkills = skills ?? [{
+        id: "skill-billing",
+        name: "billing-cost-management",
+        path: "/skills/billing/SKILL.md",
+        runtimeId: "codex:/opt/codex-a",
+    }]
+    const defaultTargets = availableDatasets[0]?.skillReference?.id && availableDatasets[0]?.id
+        ? [{skillId: availableDatasets[0].skillReference.id, datasetId: availableDatasets[0].id}]
+        : []
     const settings = {
         autoCaptureProfile: {
             runtimePolicy: "active",
@@ -101,7 +120,7 @@ function fixture({
             modelId: "gpt-small",
             effort: "low",
             datasetId: null,
-            targets: [],
+            targets: targets === undefined ? defaultTargets : targets,
         },
     }
     const sourceThread = thread("thread-1")
@@ -170,16 +189,8 @@ function fixture({
         getRuntime: async () => activeRuntime,
         getRuntimeDescriptor: () => ({runtimeId: "codex:/opt/codex-a"}),
         curationManager,
-        listDatasets: () => datasets ?? [{
-            id: "dataset-1",
-            name: "Billing",
-            skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
-        }],
-        listSkills: async () => skills ?? [{
-            name: "billing-cost-management",
-            path: "/skills/billing/SKILL.md",
-            runtimeId: "codex:/opt/codex-a",
-        }],
+        listDatasets: () => availableDatasets,
+        listSkills: async () => availableSkills,
         runAnalysis: analysis,
         captureEpisode,
         saveEvidence,
@@ -260,7 +271,7 @@ describe("scheduled conversation discovery manager", () => {
         manager.stop()
     })
 
-    it("keeps a stale Skill candidate pending when targets change during a scan", async () => {
+    it("discards a stale Skill candidate before Raw Case persistence when targets change during a scan", async () => {
         const datasets = [
             {
                 id: "dataset-systematic",
@@ -323,8 +334,7 @@ describe("scheduled conversation discovery manager", () => {
         }]
 
         assert.equal(await value.manager.runDueScan(), true)
-        assert.equal(value.candidates.length, 1)
-        assert.equal(value.candidates[0].skill.name, "systematic-debugging")
+        assert.equal(value.candidates.length, 0)
         assert.equal(created.length, 0)
         assert.equal(value.stateStore.read().lastError, null)
         assert.ok(value.stateStore.read().lastSuccessAt)
@@ -332,6 +342,180 @@ describe("scheduled conversation discovery manager", () => {
             value.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
             "thread-1-user-2",
         )
+    })
+
+    it("fails closed before reading conversations when no managed Skill target is selected", async () => {
+        let lists = 0
+        let reads = 0
+        let analyses = 0
+        const value = fixture({
+            targets: [],
+            runtime: {
+                async listThreads() {
+                    lists += 1
+                    return {data: [{id: "thread-1"}], nextCursor: null}
+                },
+                async readThread() {
+                    reads += 1
+                    return {thread: thread("thread-1")}
+                },
+            },
+            runAnalysis: async () => {
+                analyses += 1
+                throw new Error("analysis must not run without a target")
+            },
+        })
+
+        await assert.rejects(
+            value.manager.runSlot(new Date("2026-09-01T09:00:00Z")),
+            /select.*managed Skill.*Dataset|target/i,
+        )
+        assert.equal(lists, 0)
+        assert.equal(reads, 0)
+        assert.equal(analyses, 0)
+        assert.equal(value.candidates.length, 0)
+    })
+
+    it("explains when the selected managed Skill is not installed in the source Runtime", async () => {
+        let lists = 0
+        const value = fixture({
+            skills: [],
+            runtime: {
+                async listThreads() {
+                    lists += 1
+                    return {data: [{id: "thread-1"}], nextCursor: null}
+                },
+            },
+        })
+
+        await assert.rejects(
+            value.manager.runSlot(new Date("2026-09-01T09:00:00Z")),
+            /install.*selected managed Skill.*source Runtime/i,
+        )
+        assert.equal(lists, 0)
+        assert.equal(value.candidates.length, 0)
+    })
+
+    it("rechecks the selected managed Skill after asynchronous evidence capture", async () => {
+        const datasets = [
+            {
+                id: "dataset-systematic",
+                skillReference: {id: "skill-systematic", name: "systematic-debugging"},
+            },
+            {
+                id: "dataset-billing",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            },
+        ]
+        let value
+        value = fixture({
+            datasets,
+            skills: datasets.map((dataset) => ({...dataset.skillReference})),
+            runAnalysis: async (input) => JSON.stringify(input.stage === "boundary"
+                ? {
+                    segments: [{
+                        startUserItemId: "thread-1-user-1",
+                        endUserItemId: "thread-1-user-2",
+                        summary: "Debugging request",
+                    }],
+                    pendingStartUserItemId: null,
+                }
+                : {
+                    eligibleForCase: true,
+                    sourceKind: "human_task",
+                    skillName: "systematic-debugging",
+                    outcome: "unresolved",
+                    caseType: "badcase",
+                    finalAssistantItemId: "thread-1-agent-2",
+                    confidence: 0.94,
+                    reason: "The requested investigation is unfinished.",
+                }),
+            saveEvidence: async () => {
+                value.settings.autoCaptureProfile.targets = [{
+                    skillId: "skill-billing",
+                    datasetId: "dataset-billing",
+                }]
+                await Promise.resolve()
+                return {path: "/tmp/evidence.json"}
+            },
+        })
+        value.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-systematic",
+            datasetId: "dataset-systematic",
+        }]
+
+        await value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+
+        assert.equal(value.candidates.length, 0)
+    })
+
+    it("keeps a candidate when the target changes to another Dataset for the same managed Skill", async () => {
+        const datasets = [
+            {
+                id: "dataset-billing-old",
+                activeRubricVersionId: "rubric-old",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            },
+            {
+                id: "dataset-billing-new",
+                activeRubricVersionId: "rubric-new",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            },
+        ]
+        const created = []
+        let value
+        value = fixture({
+            mode: "automatic",
+            datasets,
+            skills: [{name: "billing-cost-management"}],
+            curationManager: {
+                hiddenThreadIds: () => new Set(),
+                async createSession(input) {
+                    created.push(input)
+                    return {id: "curation-current", status: "running"}
+                },
+            },
+            runAnalysis: async (input) => {
+                if (input.stage === "boundary") {
+                    return JSON.stringify({
+                        segments: [{
+                            startUserItemId: "thread-1-user-1",
+                            endUserItemId: "thread-1-user-2",
+                            summary: "Billing request",
+                        }],
+                        pendingStartUserItemId: null,
+                    })
+                }
+                value.settings.autoCaptureProfile.targets = [{
+                    skillId: "skill-billing",
+                    datasetId: "dataset-billing-new",
+                }]
+                return JSON.stringify({
+                    eligibleForCase: true,
+                    sourceKind: "human_task",
+                    skillName: "billing-cost-management",
+                    outcome: "resolved",
+                    caseType: "goodcase",
+                    finalAssistantItemId: "thread-1-agent-2",
+                    confidence: 0.92,
+                    reason: "The requested billing result was returned.",
+                })
+            },
+        })
+        value.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-billing",
+            datasetId: "dataset-billing-old",
+        }]
+
+        await value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+
+        assert.equal(value.candidates.length, 1)
+        assert.deepEqual(value.candidates[0].skill, {
+            id: "skill-billing",
+            name: "billing-cost-management",
+        })
+        assert.equal(created.length, 1)
+        assert.equal(created[0].datasetId, "dataset-billing-new")
     })
 
     it("clears only an obsolete route error when every current target is ready", async () => {
@@ -935,6 +1119,7 @@ describe("scheduled conversation discovery manager", () => {
                 name: "Billing",
                 activeRubricVersionId: "rubric-1",
                 skillReference: {
+                    id: "skill-billing",
                     name: "billing-cost-management",
                     path: "/skills/billing/SKILL.md",
                 },
@@ -1085,6 +1270,7 @@ describe("scheduled conversation discovery manager", () => {
             datasets: [{
                 id: "dataset-1",
                 skillReference: {
+                    id: "skill-billing",
                     name: "billing-cost-management",
                     path: "/skills/billing/SKILL.md",
                 },
@@ -1110,6 +1296,7 @@ describe("scheduled conversation discovery manager", () => {
             datasets: [{
                 id: "dataset-1",
                 skillReference: {
+                    id: "skill-billing",
                     name: "billing-cost-management",
                     path: "/skills/billing/SKILL.md",
                 },
@@ -1160,6 +1347,7 @@ describe("scheduled conversation discovery manager", () => {
                 id: "dataset-1",
                 activeRubricVersionId: "rubric-1",
                 skillReference: {
+                    id: "skill-billing",
                     name: "billing-cost-management",
                     path: "/skills/billing/SKILL.md",
                 },

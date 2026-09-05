@@ -1271,7 +1271,7 @@ function migrateAutomaticCaptureTargetBindings(targets) {
     return targets
 }
 
-function managedSkillIdForRuntimeSkill(runtimeSkill) {
+function managedSkillIdForRuntimeSkill(runtimeSkill, descriptor = runtimeDescriptor) {
     if (
         typeof runtimeSkill?.name !== "string" ||
         typeof runtimeSkill?.path !== "string" ||
@@ -1283,6 +1283,22 @@ function managedSkillIdForRuntimeSkill(runtimeSkill) {
         candidate = realpathSync(runtimeSkill.path)
     } catch {
         return null
+    }
+    if (
+        typeof skillInstallationStore !== "undefined" &&
+        typeof skillInstallationStore?.resolveManagedInstallationForLegacyReference === "function"
+    ) {
+        try {
+            const installation = skillInstallationStore.resolveManagedInstallationForLegacyReference({
+                name: runtimeSkill.name,
+                path: candidate,
+                runtimeId: descriptor?.runtimeId,
+                providerId: descriptor?.providerId,
+            })
+            if (installation?.skillId) return installation.skillId
+        } catch {
+            return null
+        }
     }
     const matches = []
     let catalog
@@ -1350,7 +1366,7 @@ function cachedRuntimeSkills(
     const data = (response?.data ?? []).map((entry) => ({
         ...entry,
         skills: (entry?.skills ?? []).map((skill) => {
-            const id = managedSkillIdForRuntimeSkill(skill) ??
+            const id = managedSkillIdForRuntimeSkill(skill, descriptor) ??
                 runtimeSkillIdentity(skill, descriptor, root)
             return id ? {...skill, id} : {...skill}
         }),

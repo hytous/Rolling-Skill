@@ -194,6 +194,7 @@ function buildOutcomePrompt({threadId, episode = {}, skills = [], datasets = []}
         },
         enabledSkills: skills.map((skill) => ({
             name: String(skill?.name ?? ""),
+            description: String(skill?.description ?? "").slice(0, 4_000),
             path: skill?.path ? String(skill.path) : null,
             runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null,
         })),
@@ -209,15 +210,17 @@ function buildOutcomePrompt({threadId, episode = {}, skills = [], datasets = []}
         })),
     }
     return `Decide whether this completed episode is eligible to become a Skill evaluation Case.
+The supplied enabledSkills list is the complete user-selected managed Skill target set. Do not infer any other local or system Skill, even when the episode resembles or mentions it; if no listed Skill clearly applies, mark the episode ineligible.
+A human-authored request is necessary but not sufficient. Apply this counterfactual domain check: would the originalQuestion require invoking the selected Skill for the domain described in enabledSkills if Rolling Skill, Dataset, Runtime, and automation controls were removed from context? If no, mark it ineligible. Generic word overlap is not domain evidence: debugging an optimization button is not a cost optimization task, and configuring a Dataset for a Skill is not a task for that Skill.
 A Case must be a human-authored real-world problem intended for one enabled Skill. Exclude Rolling
 Skill internal orchestration, automatic detection, Curator, Rubric, Judge, Case refresh, evaluation,
 optimization, Skill installation/audit/maintenance, generated agent-to-agent prompts, and test
 fixtures. Embedded source questions, Skill names, rubrics, or successful outputs do not make an
 internal task eligible. For an ineligible episode set skillName and caseType to null. Otherwise
-judge the purpose and provenance of the request, not just the product names it mentions. A
-human requesting incident triage or a postmortem for a malfunctioning internal tool is a human
-task, even when the affected tool is Rolling Skill; it is not a generated Rubric/Curator/Judge
-instruction. Keep generated orchestration and synthetic test fixtures excluded.
+judge the purpose and provenance of the request, not just the product names it mentions. A human
+incident report about Rolling Skill can use sourceKind human_task, but it remains ineligible unless
+the originalQuestion itself is in an enabled Skill's described domain. Keep generated orchestration
+and synthetic test fixtures excluded.
 Identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item. Copy
 finalAssistantItemId exactly from a supplied agentMessage id; use null if no exact id applies.
 Return JSON only with this exact schema:

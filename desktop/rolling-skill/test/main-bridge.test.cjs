@@ -1732,6 +1732,57 @@ describe("desktop main/preload bridge", () => {
         assert.equal(ambiguous.params.cases[0].skill.id, undefined)
     })
 
+    it("restores a managed Skill id for an installed Runtime copy from the central journal", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-managed-runtime-copy-"))
+        try {
+            const skillRoot = join(directory, "billing-cost-management")
+            const manifestPath = join(skillRoot, "SKILL.md")
+            mkdirSync(skillRoot)
+            writeFileSync(manifestPath, "---\nname: billing-cost-management\n---\n")
+            const resolutions = []
+            const context = mainFunctionContext(
+                "digestSkillIdentity",
+                "listModelsForRuntimeFromControl",
+                {
+                    activeRuntimeSkillCache: null,
+                    clientGeneration: 1,
+                    createHash,
+                    managedSkillManager: {catalog: () => ({repositories: [], skills: []})},
+                    normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                    runtimeDescriptor: {runtimeId: "runtime-stale", providerId: "codex"},
+                    skillInstallationStore: {
+                        resolveManagedInstallationForLegacyReference(input) {
+                            resolutions.push(input)
+                            return {skillId: "managed-billing"}
+                        },
+                    },
+                    workspaceRoot: "/workspace",
+                },
+            )
+
+            const response = context.cachedRuntimeSkills(
+                {data: [{skills: [{
+                    name: "billing-cost-management",
+                    path: manifestPath,
+                    enabled: true,
+                }]}]},
+                {runtimeId: "runtime-codex", providerId: "codex"},
+                "/workspace",
+                1,
+            )
+
+            assert.equal(response.data[0].skills[0].id, "managed-billing")
+            assert.deepEqual(plain(resolutions), [{
+                name: "billing-cost-management",
+                path: realpathSync(manifestPath),
+                runtimeId: "runtime-codex",
+                providerId: "codex",
+            }])
+        } finally {
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
     it("unifies Dataset bindings with the same actual Runtime Skill identity", () => {
         let datasetReference = {
             name: "Shared",
