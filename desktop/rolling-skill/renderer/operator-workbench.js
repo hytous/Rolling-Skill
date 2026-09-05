@@ -164,6 +164,10 @@
             integer: true,
             minimum: 1,
         })
+        const direction = typeof values.optimizationDirection === "string"
+            ? values.optimizationDirection.trim()
+            : ""
+        if (direction.length > 8_000) throw new TypeError("Optimization direction is too long")
         return {
             skillId: skill.id,
             baselineVersionId: baseline.id,
@@ -172,6 +176,7 @@
             targets,
             judge,
             activationMode,
+            optimizationDirection: direction || null,
             limits: {maxEpochs},
         }
     }
@@ -241,6 +246,10 @@
             baseline: cloneOptimizationSummary(run.baseline ?? {}),
             dataset: cloneOptimizationSummary(run.dataset ?? {}),
             rubric: cloneOptimizationSummary(run.rubric ?? {}),
+            optimizationDirection: typeof run.optimizationDirection === "string" && run.optimizationDirection.trim()
+                ? run.optimizationDirection.trim()
+                : null,
+            playbook: cloneOptimizationSummary(run.playbook ?? null),
             candidate: cloneOptimizationSummary(epoch?.candidate ?? null),
             installations: cloneOptimizationSummary(epoch?.installations ?? []),
             scoreTrend: cloneOptimizationSummary(run.scoreTrend ?? []),
@@ -1767,6 +1776,8 @@
             setupScroll: root.querySelector("#operator-setup-scroll"),
             setupError: root.querySelector("#operator-setup-error"),
             jobKind: root.querySelector("#operator-job-kind"),
+            objectiveLabel: root.querySelector("#operator-objective-label"),
+            objectiveHelp: root.querySelector("#operator-objective-help"),
             runtime: root.querySelector("#operator-runtime"),
             runtimeName: root.querySelector("#operator-runtime-name"),
             runtimeDetail: root.querySelector("#operator-runtime-detail"),
@@ -2218,12 +2229,30 @@
             selectors.automationBoundary.classList.toggle("hidden", optimization)
             const objective = selectors.setup.elements.objective
             objective.required = !optimization
+            objective.maxLength = optimization ? 8_000 : 32_768
+            selectors.objectiveLabel.textContent = optimization
+                ? text("operatorOptimizationDirection", "Optimization direction · optional")
+                : text("operatorObjective", "Objective")
+            objective.placeholder = optimization
+                ? text(
+                    "operatorOptimizationDirectionPlaceholder",
+                    "For example: prioritize permission queries, anomaly drilldown, and recovery after failures. Leave blank for comprehensive system optimization.",
+                )
+                : text("operatorObjectivePlaceholder", "Describe the bounded outcome…")
+            selectors.objectiveHelp.textContent = optimization
+                ? text(
+                    "operatorOptimizationDirectionHelp",
+                    "When blank, the system finds improvements from baseline evaluations and the user experience; when filled, it prioritizes this direction.",
+                )
+                : ""
+            selectors.objectiveHelp.classList.toggle("hidden", !optimization)
             for (const card of selectors.targets.querySelectorAll("[data-operator-target-card]")) {
                 card.querySelector(".operator-target-runtime-options")?.classList.toggle("hidden", !optimization)
             }
         }
 
         function optimizationValues() {
+            const objective = selectors.setup.elements.objective
             const targets = [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
                 .map((input) => {
                     const card = input.closest("[data-operator-target-card]")
@@ -2253,6 +2282,7 @@
                     effort: selectors.optimizationJudgeEffort.value,
                 },
                 activationMode: selectors.optimizationActivation.value,
+                optimizationDirection: objective.value.trim() || null,
                 limits,
             }
         }
@@ -2288,6 +2318,17 @@
                     id: view.rubric.id ?? "—",
                     version: view.rubric.version ?? "—",
                 }, "Rubric {id} @ {version}"),
+                ...(view.playbook ? [
+                    message("operatorOptimizationDirectionValue", {
+                        value: view.optimizationDirection ?? text(
+                            "operatorSystemOptimization",
+                            "comprehensive system optimization",
+                        ),
+                    }, "Direction {value}"),
+                    message("operatorOptimizationMethodValue", {
+                        value: `Rolling Skill Optimization Playbook v${view.playbook.version} · ${String(view.playbook.digest ?? "").slice(0, 19)}…`,
+                    }, "Method {value}"),
+                ] : []),
                 message("operatorState", {value: jobStatusText(view.state)}, "State {value}"),
             ].join(" · ")
             selectors.optimizationTimeline.replaceChildren()
@@ -2837,6 +2878,7 @@
                     })
                     if (destroyed) return
                     const reduced = reduceOptimizationTimeline(null, run)
+                    selectors.setup.elements.objective.value = ""
                     optimizationRuns.set(reduced.id, reduced)
                     activeOptimizationRunId = reduced.id
                     creating = false

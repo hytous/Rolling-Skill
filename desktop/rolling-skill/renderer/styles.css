@@ -1143,6 +1143,12 @@ kbd {
     resize: vertical;
 }
 
+.operator-field-help {
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+}
+
 .operator-setup-section {
     margin-top: 10px;
     padding: 12px;

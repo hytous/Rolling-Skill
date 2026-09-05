@@ -1978,6 +1978,12 @@ async function run() {
             maxIterationsCount: document.querySelectorAll("[data-operator-max-iterations]").length,
             targetCount: document.querySelectorAll("[data-optimization-target]").length,
             hasMode: Boolean(document.querySelector("#operator-optimization-mode")),
+            directionLabel: document.querySelector("#operator-objective-label")?.textContent ?? "",
+            directionPlaceholder: document.querySelector('[name="objective"]')?.placeholder ?? "",
+            directionHelp: document.querySelector("#operator-objective-help")?.textContent ?? "",
+            directionHelpVisible: Boolean(document.querySelector("#operator-objective-help")?.getClientRects().length),
+            directionRequired: document.querySelector('[name="objective"]')?.required,
+            directionMaxLength: document.querySelector('[name="objective"]')?.maxLength,
         }
     })()`)
     if (
@@ -1989,10 +1995,35 @@ async function run() {
         !epochOnlySetup.ordinaryBoundaryHidden ||
         epochOnlySetup.maxIterationsCount !== 0 ||
         epochOnlySetup.targetCount !== 0 ||
-        epochOnlySetup.hasMode
+        epochOnlySetup.hasMode ||
+        epochOnlySetup.directionLabel !== "优化方向（可选）" ||
+        !epochOnlySetup.directionPlaceholder.includes("留空时由系统全面优化") ||
+        !epochOnlySetup.directionHelp.includes("基线评测和用户使用体验") ||
+        !epochOnlySetup.directionHelpVisible ||
+        epochOnlySetup.directionRequired ||
+        epochOnlySetup.directionMaxLength !== 8000
     ) {
         throw new Error(`Optimization setup is not Epoch-only: ${JSON.stringify(epochOnlySetup)}`)
     }
+    const objectiveModeSwitch = await inspect(window, `(() => {
+        const kind = document.querySelector("#operator-job-kind")
+        const objective = document.querySelector('[name="objective"]')
+        const label = document.querySelector("#operator-objective-label")
+        kind.value = "operator"
+        kind.dispatchEvent(new Event("change", {bubbles: true}))
+        const generic = {label: label.textContent, required: objective.required, maxLength: objective.maxLength}
+        kind.value = "optimization"
+        kind.dispatchEvent(new Event("change", {bubbles: true}))
+        return {generic, optimization: {label: label.textContent, required: objective.required, maxLength: objective.maxLength}}
+    })()`)
+    if (
+        objectiveModeSwitch.generic.label !== "目标" ||
+        !objectiveModeSwitch.generic.required ||
+        objectiveModeSwitch.generic.maxLength !== 32768 ||
+        objectiveModeSwitch.optimization.label !== "优化方向（可选）" ||
+        objectiveModeSwitch.optimization.required ||
+        objectiveModeSwitch.optimization.maxLength !== 8000
+    ) throw new Error(`Objective mode semantics drifted: ${JSON.stringify(objectiveModeSwitch)}`)
     await inspect(window, `(() => {
         const change = (selector, value) => {
             const element = document.querySelector(selector)
@@ -2022,6 +2053,7 @@ async function run() {
         throw new Error("Optimization still exposes a separate preflight action")
     }
     await inspect(window, 'window.rollingSkill.smokeFailNextOptimizationStart()')
+    await inspect(window, 'document.querySelector(\'[name="objective"]\').value = "   "')
     await inspect(window, 'document.querySelector("#operator-optimization-start").click()')
     await waitFor(window, `
         document.querySelector("#operator-setup-error").textContent.includes("评分标准") &&
@@ -2041,6 +2073,7 @@ async function run() {
     ) {
         throw new Error(`Optimization failure was not actionable and retryable: ${JSON.stringify(optimizationFailure)}`)
     }
+    await inspect(window, 'document.querySelector(\'[name="objective"]\').value = "  重点改善异常下钻  "')
     const optimizationStarting = await inspect(window, `(() => {
         const start = document.querySelector("#operator-optimization-start")
         start.click()
@@ -2062,12 +2095,23 @@ async function run() {
         }))()`)
         throw new Error(`Optimization Start did not create a Job: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
     }
-    const optimizationStartCalls = await inspect(
+    const optimizationStartMetrics = await inspect(
         window,
-        'window.rollingSkill.smokeOperatorMetrics().then(({optimizationStartCalls}) => optimizationStartCalls)',
+        'window.rollingSkill.smokeOperatorMetrics().then(({optimizationStartCalls, optimizationStartInputs}) => ({optimizationStartCalls, optimizationStartInputs}))',
     )
-    if (optimizationStartCalls !== 2) {
-        throw new Error(`Optimization Start call count changed: ${optimizationStartCalls}`)
+    if (
+        optimizationStartMetrics.optimizationStartCalls !== 2 ||
+        optimizationStartMetrics.optimizationStartInputs[0]?.optimizationDirection !== null ||
+        optimizationStartMetrics.optimizationStartInputs[1]?.optimizationDirection !== "重点改善异常下钻"
+    ) {
+        throw new Error(`Optimization direction payload changed: ${JSON.stringify(optimizationStartMetrics)}`)
+    }
+    const clearedOptimizationDirection = await inspect(
+        window,
+        'document.querySelector(\'[name="objective"]\').value',
+    )
+    if (clearedOptimizationDirection !== "") {
+        throw new Error(`Successful Optimization did not clear its direction: ${JSON.stringify(clearedOptimizationDirection)}`)
     }
     const optimizationJobId = await inspect(window, `[...document.querySelectorAll("[data-operator-job-id]")]
         .find((node) => node.textContent.includes("Skill 自动优化 · billing-cost-analysis · optimization"))?.dataset.operatorJobId`)
@@ -2093,6 +2137,7 @@ async function run() {
         listTitle: document.querySelector(${JSON.stringify(optimizationJobSelector)})
             ?.querySelector(".operator-job-title")?.textContent,
         sessionTitle: document.querySelector("#operator-session-title").textContent,
+        frozen: document.querySelector("#operator-optimization-frozen").textContent,
         actions: [
             document.querySelector("#operator-composer-send"),
             document.querySelector("[data-optimization-action=pause]"),
@@ -2103,6 +2148,8 @@ async function run() {
     if (
         optimizationChrome.listTitle !== "Skill 自动优化 · billing-cost-analysis · optimization" ||
         optimizationChrome.sessionTitle !== "Skill 自动优化 · billing-cost-analysis · optimization" ||
+        !optimizationChrome.frozen.includes("优化方向 重点改善异常下钻") ||
+        !optimizationChrome.frozen.includes("Rolling Skill Optimization Playbook v1") ||
         optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
         !optimizationChrome.actions[0].includes("primary") ||
         !optimizationChrome.actions[2].includes("operator-action-danger")

@@ -1536,6 +1536,7 @@ describe("multi-Epoch Optimization workbench", () => {
             targets: [{runtimeId: "codebuddy:target", modelId: "claude-sonnet", effort: "medium"}],
             judge: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
             activationMode: "automatic",
+            optimizationDirection: "  重点改善异常下钻  ",
             limits: {maxEpochs: "5"},
         }
     }
@@ -1549,8 +1550,18 @@ describe("multi-Epoch Optimization workbench", () => {
             targets: values().targets,
             judge: values().judge,
             activationMode: "automatic",
+            optimizationDirection: "重点改善异常下钻",
             limits: {maxEpochs: 5},
         })
+
+        assert.equal(buildOptimizationConfig({
+            ...values(),
+            optimizationDirection: "   ",
+        }, catalogs()).optimizationDirection, null)
+        assert.throws(() => buildOptimizationConfig({
+            ...values(),
+            optimizationDirection: "x".repeat(8_001),
+        }, catalogs()), /direction.*long|方向.*长/iu)
 
         const wrongDataset = catalogs()
         wrongDataset.datasets[0].skillReference.id = "skill-other"
@@ -1728,6 +1739,12 @@ describe("multi-Epoch Optimization workbench", () => {
             baseline: {versionId: "released-1", contentDigest: `sha256:${"b".repeat(64)}`},
             dataset: {id: "dataset-1", revision: 7},
             rubric: {id: "rubric-1", version: 4},
+            optimizationDirection: "重点改善异常下钻",
+            playbook: {
+                id: "rolling-skill-optimization",
+                version: 1,
+                digest: `sha256:${"p".repeat(64)}`,
+            },
             limits: {maxEpochs: 5},
             epochs: [{
                 number: 2,
@@ -1755,6 +1772,8 @@ describe("multi-Epoch Optimization workbench", () => {
         assert.equal(panel.regressionCount, 3)
         assert.equal(panel.stopReason, "broad_regression")
         assert.equal(panel.reportArtifactId, "report-1")
+        assert.equal(panel.optimizationDirection, "重点改善异常下钻")
+        assert.equal(panel.playbook.version, 1)
         assert.deepEqual(panel.release, {
             approvalId: "final-approval-1",
             releasedVersionId: null,

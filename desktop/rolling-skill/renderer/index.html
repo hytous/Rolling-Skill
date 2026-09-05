@@ -337,8 +337,9 @@
                                 </label>
                             </header>
                             <label class="operator-field operator-objective-field">
-                                <span data-i18n="operatorObjective">Objective</span>
-                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder"></textarea>
+                                <span id="operator-objective-label" data-i18n="operatorObjective">Objective</span>
+                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder" aria-labelledby="operator-objective-label" aria-describedby="operator-objective-help"></textarea>
+                                <small id="operator-objective-help" class="operator-field-help hidden"></small>
                             </label>
                             <section class="operator-setup-section operator-environment-section">
                                 <h2 data-i18n="operatorEnvironment">Run environment</h2>

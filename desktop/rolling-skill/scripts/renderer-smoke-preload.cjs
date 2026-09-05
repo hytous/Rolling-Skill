@@ -446,6 +446,7 @@ const smokeOptimizationDataset = {
 let smokeOptimizationRun = null
 let smokeOptimizationStage = 0
 let smokeOptimizationStartCalls = 0
+const smokeOptimizationStartInputs = []
 let failNextOptimizationStart = false
 
 function smokeOptimizationBase(config) {
@@ -468,10 +469,13 @@ function smokeOptimizationBase(config) {
         targets: config.targets,
         judge: config.judge,
         activationMode: config.activationMode,
-        mode: config.mode,
         limits: config.limits,
-        target: config.target,
-        telemetry: config.telemetry,
+        optimizationDirection: config.optimizationDirection,
+        playbook: {
+            id: "rolling-skill-optimization",
+            version: 1,
+            digest: `sha256:${"a".repeat(64)}`,
+        },
         epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
         checkpoint: {paused: false},
         error: null,
@@ -1225,6 +1229,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     stopOperatorJob: (jobId) => invokeOperator("stop", {jobId}),
     startOptimization: async (input) => {
         smokeOptimizationStartCalls += 1
+        smokeOptimizationStartInputs.push(structuredClone(input))
         if (failNextOptimizationStart) {
             failNextOptimizationStart = false
             throw new Error("Optimization Dataset requires a published Rubric")
@@ -1361,6 +1366,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     smokeOperatorMetrics: async () => ({
         ...await invokeOperator("metrics"),
         optimizationStartCalls: smokeOptimizationStartCalls,
+        optimizationStartInputs: structuredClone(smokeOptimizationStartInputs),
         subscriptions: {
             changed: operatorChangedListeners.size,
             event: operatorEventListeners.size,
