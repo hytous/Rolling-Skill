@@ -322,6 +322,32 @@
         }
     }
 
+    function optimizationUserSummaryView(run = {}) {
+        const epochs = Array.isArray(run.epochs) ? run.epochs : []
+        const latest = [...epochs].reverse().find((epoch) => Number.isFinite(epoch?.analysis?.score)) ?? null
+        const analysis = latest?.analysis ?? null
+        const delta = Number.isFinite(analysis?.baselineScoreDelta) ? analysis.baselineScoreDelta : null
+        return {
+            phase: run.state ?? "unknown",
+            currentEpoch: run.currentEpoch ?? 0,
+            maxEpochs: Number.isSafeInteger(run.limits?.maxEpochs) ? run.limits.maxEpochs : null,
+            direction: typeof run.optimizationDirection === "string" && run.optimizationDirection.trim()
+                ? run.optimizationDirection.trim()
+                : null,
+            latestResult: analysis ? {
+                epoch: latest.number,
+                score: analysis.score,
+                baselineScore: delta === null ? null : analysis.score - delta,
+                baselineScoreDelta: delta,
+                passRate: Number.isFinite(analysis.passRate) ? analysis.passRate : null,
+                regressionCount: Number.isSafeInteger(analysis.regressionCount) ? analysis.regressionCount : 0,
+            } : null,
+            action: run.state === "waiting_approval"
+                ? "final_approval"
+                : run.state === "needs_recovery" ? "recovery" : null,
+        }
+    }
+
     function optimizationFinalApproval(snapshot = {}) {
         if (!snapshot?.job?.id) return null
         const jobIds = operatorJobTreeIds(snapshot)
@@ -1656,6 +1682,38 @@
         continue: "operatorStatusRunning",
     })
 
+    const OPTIMIZATION_PHASE_KEYS = Object.freeze({
+        preflight: "operatorOptimizationPhasePreflight",
+        baseline: "operatorOptimizationPhaseBaseline",
+        editing: "operatorOptimizationPhaseEditing",
+        installing: "operatorOptimizationPhaseInstalling",
+        evaluating: "operatorOptimizationPhaseEvaluating",
+        deciding: "operatorOptimizationPhaseDeciding",
+        waiting_approval: "operatorOptimizationPhaseWaitingApproval",
+        restoring: "operatorOptimizationPhaseRestoring",
+        paused: "operatorOptimizationPhasePaused",
+        succeeded: "operatorOptimizationPhaseSucceeded",
+        failed: "operatorOptimizationPhaseFailed",
+        cancelled: "operatorOptimizationPhaseCancelled",
+        needs_recovery: "operatorOptimizationPhaseNeedsRecovery",
+    })
+
+    const OPTIMIZATION_PHASE_COPY_KEYS = Object.freeze({
+        preflight: "operatorOptimizationCopyPreflight",
+        baseline: "operatorOptimizationCopyBaseline",
+        editing: "operatorOptimizationCopyEditing",
+        installing: "operatorOptimizationCopyInstalling",
+        evaluating: "operatorOptimizationCopyEvaluating",
+        deciding: "operatorOptimizationCopyDeciding",
+        waiting_approval: "operatorOptimizationCopyWaitingApproval",
+        restoring: "operatorOptimizationCopyRestoring",
+        paused: "operatorOptimizationCopyPaused",
+        succeeded: "operatorOptimizationCopySucceeded",
+        failed: "operatorOptimizationCopyFailed",
+        cancelled: "operatorOptimizationCopyCancelled",
+        needs_recovery: "operatorOptimizationCopyNeedsRecovery",
+    })
+
     function operatorStatusText(status, translate = null) {
         const normalized = String(status ?? "unknown").trim().toLowerCase() || "unknown"
         const key = OPERATOR_STATUS_KEYS[normalized]
@@ -1673,6 +1731,18 @@
         if (!reason) return "—"
         const key = OPTIMIZATION_REASON_KEYS[reason]
         return key ? translatedText(translate, key, String(reason)) : String(reason).replaceAll("_", " ")
+    }
+
+    function optimizationPhaseText(state, translate = null) {
+        const key = OPTIMIZATION_PHASE_KEYS[state]
+        return key
+            ? translatedText(translate, key, String(state))
+            : operatorStatusText(state, translate)
+    }
+
+    function optimizationPhaseCopy(state, translate = null) {
+        const key = OPTIMIZATION_PHASE_COPY_KEYS[state]
+        return key ? translatedText(translate, key, "") : ""
     }
 
     function createElement(document_, tag, className = "", text = "") {
@@ -1860,16 +1930,32 @@
             composerInput: root.querySelector("#operator-composer-input"),
             composerSend: root.querySelector("#operator-composer-send"),
             status: root.querySelector("#operator-status-panel"),
+            technicalDetails: root.querySelector("#operator-technical-details"),
             scope: root.querySelector("#operator-scope"),
+            scopeSection: root.querySelector("#operator-scope-section"),
             budget: root.querySelector("#operator-budget"),
+            budgetSection: root.querySelector("#operator-budget-section"),
             children: root.querySelector("#operator-child-jobs"),
+            childrenSection: root.querySelector("#operator-child-jobs-section"),
             artifacts: root.querySelector("#operator-artifacts"),
+            artifactsSection: root.querySelector("#operator-artifacts-section"),
             approvals: root.querySelector("#operator-approval-queue"),
+            approvalSection: root.querySelector("#operator-approval-section"),
             optimizationPanel: root.querySelector("#operator-optimization-panel"),
+            optimizationPhase: root.querySelector("#operator-optimization-phase"),
+            optimizationProgress: root.querySelector("#operator-optimization-progress"),
+            optimizationStatusCopy: root.querySelector("#operator-optimization-status-copy"),
+            optimizationDirectionSummary: root.querySelector("#operator-optimization-direction-summary"),
+            optimizationResult: root.querySelector("#operator-optimization-result"),
+            optimizationDecision: root.querySelector("#operator-optimization-decision"),
             optimizationFrozen: root.querySelector("#operator-optimization-frozen"),
+            optimizationFrozenSection: root.querySelector("#operator-optimization-frozen-section"),
             optimizationTimeline: root.querySelector("#operator-optimization-timeline"),
+            optimizationTimelineSection: root.querySelector("#operator-optimization-timeline-section"),
             optimizationInstallations: root.querySelector("#operator-optimization-installations"),
+            optimizationInstallationsSection: root.querySelector("#operator-optimization-installations-section"),
             optimizationBudget: root.querySelector("#operator-optimization-budget"),
+            optimizationInternalSection: root.querySelector("#operator-optimization-internal-section"),
             optimizationRecovery: root.querySelector("#operator-optimization-recovery"),
             optimizationStopWarning: root.querySelector("#operator-optimization-stop-warning"),
             optimizationActions: root.querySelector("#operator-optimization-actions"),
@@ -2387,13 +2473,167 @@
             return runId ? optimizationRuns.get(runId) ?? null : null
         }
 
+        function refreshTechnicalDetailsVisibility() {
+            const sections = [
+                selectors.optimizationFrozenSection,
+                selectors.optimizationTimelineSection,
+                selectors.optimizationInstallationsSection,
+                selectors.optimizationInternalSection,
+                selectors.scopeSection,
+                selectors.budgetSection,
+                selectors.childrenSection,
+                selectors.artifactsSection,
+            ]
+            selectors.technicalDetails.classList.toggle(
+                "hidden",
+                !sections.some((section) => !section.classList.contains("hidden")),
+            )
+        }
+
+        function runtimeSummaryLabel(runtimeId) {
+            const runtime = optimizationCatalogRuntime(catalogs, runtimeId)
+            return runtime ? runtimeDisplayParts(runtime).base : runtimeId
+        }
+
+        function displayScore(value) {
+            return Number.isInteger(value) ? String(value) : Number(value).toFixed(1)
+        }
+
+        function appendOptimizationMetric(container, label, value, accent = false) {
+            const metric = createElement(
+                document_,
+                "div",
+                `operator-optimization-metric${accent ? " accent" : ""}`,
+            )
+            metric.append(
+                createElement(document_, "span", "", label),
+                createElement(document_, "strong", "", value),
+            )
+            container.append(metric)
+        }
+
         function renderOptimizationPanel(run) {
             selectors.optimizationPanel.classList.toggle("hidden", !run)
-            if (!run) return
+            if (!run) {
+                for (const section of [
+                    selectors.optimizationFrozenSection,
+                    selectors.optimizationTimelineSection,
+                    selectors.optimizationInstallationsSection,
+                    selectors.optimizationInternalSection,
+                ]) section.classList.add("hidden")
+                delete selectors.technicalDetails.dataset.optimizationRunId
+                selectors.technicalDetails.open = true
+                return
+            }
             const view = optimizationPanelView(run)
+            const summary = optimizationUserSummaryView(run)
             const snapshot = state.getSnapshot(state.activeJobId)
             const finalApproval = optimizationFinalApproval(snapshot)
             const finalApprovalEvidence = optimizationFinalApprovalView(run, finalApproval)
+            if (selectors.technicalDetails.dataset.optimizationRunId !== view.id) {
+                selectors.technicalDetails.dataset.optimizationRunId = view.id
+                selectors.technicalDetails.open = false
+            }
+            selectors.optimizationPhase.textContent = optimizationPhaseText(summary.phase, translate)
+            selectors.optimizationStatusCopy.textContent = optimizationPhaseCopy(summary.phase, translate)
+            selectors.optimizationProgress.textContent = summary.currentEpoch > 0 && summary.maxEpochs !== null
+                ? message("operatorEpochProgress", {
+                    current: summary.currentEpoch,
+                    max: summary.maxEpochs,
+                }, "Epoch {current}/{max}")
+                : text("operatorEpochNotStarted", "Epoch not started")
+            selectors.optimizationDirectionSummary.textContent = message(
+                "operatorDirectionSummary",
+                {value: summary.direction ?? text("operatorSystemOptimization", "comprehensive system optimization")},
+                "Priority: {value}",
+            )
+            selectors.optimizationResult.replaceChildren()
+            if (summary.latestResult) {
+                const result = summary.latestResult
+                const heading = createElement(document_, "div", "operator-optimization-result-head")
+                heading.append(
+                    createElement(document_, "strong", "", text("operatorLatestResult", "Latest evaluation")),
+                    createElement(document_, "span", "", message(
+                        "operatorEpochResult",
+                        {value: result.epoch},
+                        "Epoch {value}",
+                    )),
+                )
+                const metrics = createElement(document_, "div", "operator-optimization-metrics")
+                appendOptimizationMetric(
+                    metrics,
+                    text("operatorCurrentScore", "Current score"),
+                    displayScore(result.score),
+                    true,
+                )
+                if (result.baselineScore !== null) appendOptimizationMetric(
+                    metrics,
+                    text("operatorBaselineScore", "Baseline score"),
+                    displayScore(result.baselineScore),
+                )
+                appendOptimizationMetric(
+                    metrics,
+                    text("operatorPassRate", "Pass rate"),
+                    result.passRate === null ? "—" : `${(result.passRate * 100).toFixed(0)}%`,
+                )
+                appendOptimizationMetric(
+                    metrics,
+                    text("operatorRegressionCount", "Regressions"),
+                    String(result.regressionCount),
+                )
+                if (result.baselineScoreDelta !== null) {
+                    const delta = result.baselineScoreDelta > 0
+                        ? `+${displayScore(result.baselineScoreDelta)}`
+                        : displayScore(result.baselineScoreDelta)
+                    heading.append(createElement(document_, "small", "", message(
+                        "operatorComparedWithBaseline",
+                        {value: delta},
+                        "vs baseline {value}",
+                    )))
+                }
+                selectors.optimizationResult.append(heading, metrics)
+            } else {
+                selectors.optimizationResult.append(createElement(
+                    document_,
+                    "p",
+                    "operator-compact-copy",
+                    text("operatorNoEvaluationResult", "Results will appear after the first evaluation"),
+                ))
+            }
+            selectors.optimizationDecision.replaceChildren()
+            if (finalApproval) {
+                selectors.optimizationDecision.classList.remove("hidden")
+                selectors.optimizationDecision.append(
+                    createElement(document_, "strong", "", text("operatorDecisionRequired", "Your decision is needed")),
+                    createElement(document_, "p", "", text(
+                        "operatorFinalDecisionHelp",
+                        "The complete evaluation is ready. Install the improved version or restore the original version.",
+                    )),
+                )
+                const runtimeLabels = finalApprovalEvidence.runtimeIds.map(runtimeSummaryLabel)
+                if (runtimeLabels.length) selectors.optimizationDecision.append(createElement(
+                    document_,
+                    "small",
+                    "",
+                    message("operatorAffectedRuntimes", {
+                        count: runtimeLabels.length,
+                        value: runtimeLabels.join(", "),
+                    }, "{count} Runtimes: {value}"),
+                ))
+            } else if (summary.action === "recovery") {
+                selectors.optimizationDecision.classList.remove("hidden")
+                selectors.optimizationDecision.append(
+                    createElement(document_, "strong", "", text("operatorRecoveryRequired", "Recovery needs attention")),
+                    createElement(document_, "p", "", text(
+                        "operatorRecoveryHelp",
+                        "Some Runtime Skills could not be confirmed as restored. Open the affected installation below.",
+                    )),
+                )
+            } else {
+                selectors.optimizationDecision.classList.add("hidden")
+            }
+            selectors.optimizationFrozenSection.classList.remove("hidden")
+            selectors.optimizationInternalSection.classList.remove("hidden")
             selectors.optimizationFrozen.textContent = [
                 message("operatorBaselineValue", {value: view.baseline.versionId ?? "—"}, "Baseline {value}"),
                 message("operatorDatasetValue", {
@@ -2435,32 +2675,22 @@
                 )
                 selectors.optimizationTimeline.append(row)
             }
-            if (!view.scoreTrend.length) {
-                selectors.optimizationTimeline.append(createElement(
-                    document_,
-                    "div",
-                    "operator-empty",
-                    text("operatorNoEpochScore", "No completed Epoch score yet"),
-                ))
+            selectors.optimizationTimelineSection.classList.toggle("hidden", view.scoreTrend.length === 0)
+            selectors.optimizationInstallations.replaceChildren()
+            for (const installation of view.installations) {
+                const card = createElement(document_, "article", "operator-side-card")
+                card.append(
+                    createElement(document_, "strong", "", installation.runtimeId),
+                    createElement(
+                        document_,
+                        "small",
+                        "",
+                        `${operatorStatusText(installation.status, translate)} · ${installation.installationJobId}`,
+                    ),
+                )
+                selectors.optimizationInstallations.append(card)
             }
-            renderList(
-                selectors.optimizationInstallations,
-                view.installations,
-                (installation) => {
-                    const card = createElement(document_, "article", "operator-side-card")
-                    card.append(
-                        createElement(document_, "strong", "", installation.runtimeId),
-                        createElement(
-                            document_,
-                            "small",
-                            "",
-                            `${operatorStatusText(installation.status, translate)} · ${installation.installationJobId}`,
-                        ),
-                    )
-                    return card
-                },
-                text("operatorNoInstallationState", "No current installation state"),
-            )
+            selectors.optimizationInstallationsSection.classList.toggle("hidden", view.installations.length === 0)
             const notReported = text("operatorNotReported", "not reported")
             selectors.optimizationBudget.textContent = [
                 message("operatorEpochValue", {value: view.currentEpoch}, "Epoch {value}"),
@@ -2497,10 +2727,8 @@
             selectors.optimizationRecovery.replaceChildren()
             for (const target of view.recoveryTargets) {
                 const card = createElement(document_, "button", "operator-link", [
-                    target.runtimeId,
+                    runtimeSummaryLabel(target.runtimeId),
                     operatorStatusText(target.status, translate),
-                    message("operatorJobValue", {value: target.installationJobId}, "Job {value}"),
-                    target.lastVerifiedDigest ?? text("operatorDigestUnavailable", "digest unavailable"),
                 ].join(" · "))
                 card.type = "button"
                 card.dataset.optimizationInstallationId = target.installationJobId
@@ -2538,6 +2766,7 @@
                     selectors.optimizationActions.append(button)
                 }
             }
+            refreshTechnicalDetailsVisibility()
         }
 
         function clearOptimizationPoll() {
@@ -2689,8 +2918,14 @@
 
         function patchStatus(snapshot) {
             const configuration = sessionConfiguration(snapshot)
-            selectors.scope.textContent = scopeText(configuration.scopes ?? configuration.scope, translate)
-            selectors.budget.textContent = Object.entries(snapshot.job.budget ?? {})
+            const scope = configuration.scopes ?? configuration.scope ?? {}
+            const hasScope = Object.values(scope).some((value) => (
+                Array.isArray(value) ? value.length > 0 : value !== null && value !== undefined && value !== ""
+            ))
+            selectors.scope.textContent = scopeText(scope, translate)
+            selectors.scopeSection.classList.toggle("hidden", !hasScope)
+            const budgetEntries = Object.entries(snapshot.job.budget ?? {})
+            selectors.budget.textContent = budgetEntries
                 .map(([key, value]) => {
                     const label = OPERATOR_BUDGET_KEYS[key]
                         ? text(OPERATOR_BUDGET_KEYS[key], key)
@@ -2698,9 +2933,12 @@
                     return `${label}: ${value ?? text("operatorUnlimited", "unlimited")}`
                 })
                 .join(" · ") || text("operatorNoBudget", "No budget details")
+            selectors.budgetSection.classList.toggle("hidden", budgetEntries.length === 0)
+            const childJobs = snapshot.jobs.filter((job) => job.id !== snapshot.job.id)
+            selectors.childrenSection.classList.toggle("hidden", childJobs.length === 0)
             renderList(
                 selectors.children,
-                snapshot.jobs.filter((job) => job.id !== snapshot.job.id),
+                childJobs,
                 (job) => {
                     const card = createElement(document_, "article", "operator-side-card")
                     card.append(
@@ -2711,6 +2949,7 @@
                 },
                 text("operatorNoChildJobs", "No child Jobs"),
             )
+            selectors.artifactsSection.classList.toggle("hidden", snapshot.artifacts.length === 0)
             renderList(
                 selectors.artifacts,
                 snapshot.artifacts,
@@ -2741,10 +2980,13 @@
                 },
                 text("operatorNoArtifacts", "No artifacts"),
             )
-            const pending = snapshot.approvals.filter((approval) => approval.status === "pending")
+            const pending = snapshot.approvals.filter((approval) => (
+                approval.status === "pending" && approval.action !== "optimization.release-install"
+            ))
+            selectors.approvalSection.classList.toggle("hidden", pending.length === 0)
             renderList(
                 selectors.approvals,
-                snapshot.approvals,
+                pending,
                 (approval) => {
                     const card = createElement(document_, "article", "operator-approval-card")
                     card.dataset.operatorApprovalId = approval.id
@@ -2790,6 +3032,7 @@
                 },
                 text("operatorNoApprovals", "No approvals"),
             )
+            refreshTechnicalDetailsVisibility()
         }
 
         function renderSessionActions(snapshot) {
@@ -2821,6 +3064,8 @@
                 activeOptimizationRunId = null
                 clearOptimizationPoll()
                 renderOptimizationPanel(null)
+                selectors.technicalDetails.classList.add("hidden")
+                selectors.approvalSection.classList.add("hidden")
                 if (creating) {
                     selectors.transcript.replaceChildren(
                         createElement(
@@ -3234,6 +3479,7 @@
         createOperatorWorkbench,
         createOperatorWorkbenchState,
         optimizationPanelView,
+        optimizationUserSummaryView,
         optimizationFinalApproval,
         optimizationFinalApprovalView,
         optimizationSetupErrorText,

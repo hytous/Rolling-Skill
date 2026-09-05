@@ -187,6 +187,7 @@ function publicAnalysis(value) {
     for (const [field, minimum, maximum] of [
         ["score", 0, 100],
         ["scoreDelta", -100, 100],
+        ["baselineScoreDelta", -100, 100],
         ["passRate", 0, 1],
     ]) {
         if (Number.isFinite(value[field]) && value[field] >= minimum && value[field] <= maximum) {

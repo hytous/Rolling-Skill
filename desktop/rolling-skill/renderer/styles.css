@@ -985,6 +985,166 @@ kbd {
     letter-spacing: -0.01em;
 }
 
+.operator-optimization-summary-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.operator-optimization-summary-head > div {
+    display: grid;
+    min-width: 0;
+    gap: 4px;
+}
+
+.operator-optimization-summary-head strong {
+    font-size: 14px;
+    line-height: 1.3;
+}
+
+.operator-optimization-progress {
+    flex: 0 0 auto;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+    font-size: 10.5px;
+    font-weight: 680;
+}
+
+#operator-optimization-status-copy {
+    margin-top: 8px;
+}
+
+.operator-optimization-direction-summary {
+    margin: 10px 0 0;
+    padding: 7px 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.4;
+}
+
+.operator-optimization-result {
+    display: grid;
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    gap: 8px;
+}
+
+.operator-optimization-result-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 7px;
+}
+
+.operator-optimization-result-head strong {
+    margin-right: auto;
+    font-size: 11.5px;
+}
+
+.operator-optimization-result-head span,
+.operator-optimization-result-head small {
+    color: var(--muted);
+    font-size: 9.5px;
+}
+
+.operator-optimization-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.operator-optimization-metric {
+    display: grid;
+    min-width: 0;
+    padding: 7px;
+    border-radius: 7px;
+    background: var(--surface-raised);
+    gap: 2px;
+}
+
+.operator-optimization-metric span {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 9.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.operator-optimization-metric strong {
+    font-size: 14px;
+}
+
+.operator-optimization-metric.accent {
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+}
+
+.operator-optimization-decision {
+    display: grid;
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--warning) 7%, var(--surface));
+    gap: 5px;
+}
+
+.operator-optimization-decision strong {
+    font-size: 11.5px;
+}
+
+.operator-optimization-decision p,
+.operator-optimization-decision small {
+    margin: 0;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.45;
+}
+
+.operator-technical-details {
+    margin: 4px 0 0;
+    border-bottom: 0;
+}
+
+.operator-technical-details > summary {
+    padding: 10px 0;
+    color: var(--muted);
+    cursor: default;
+    font-size: 11px;
+    font-weight: 650;
+    list-style-position: inside;
+}
+
+.operator-technical-details[open] > summary {
+    color: var(--text);
+}
+
+.operator-technical-body {
+    display: grid;
+    padding-bottom: 12px;
+    gap: 0;
+}
+
+.operator-technical-body > section {
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+}
+
+.operator-technical-body h3 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 680;
+}
+
 .operator-compact-copy {
     margin: 0;
     color: var(--muted);
@@ -1233,6 +1393,16 @@ kbd {
 .operator-optimization-stop-warning,
 .operator-optimization-recovery:not(:empty) {
     border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.operator-optimization-recovery:empty {
+    display: none;
+}
+
+#operator-optimization-actions,
+.operator-optimization-stop-warning,
+.operator-optimization-recovery:not(:empty) {
+    margin-top: 10px;
 }
 
 .operator-optimization-timeline {

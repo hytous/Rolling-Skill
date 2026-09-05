@@ -17,6 +17,7 @@ const {
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
     optimizationPanelView,
+    optimizationUserSummaryView,
     optimizationFinalApproval,
     optimizationFinalApprovalView,
     optimizationSetupErrorText,
@@ -258,6 +259,27 @@ describe("Operator workbench state", () => {
         const risk = markup.match(/<input[^>]+data-operator-risk="datasets\.delete"[^>]*>/u)?.[0]
         assert.ok(risk)
         assert.doesNotMatch(risk, /\schecked(?:\s|=|>)/u)
+    })
+
+    it("keeps automatic optimization readable by default and audit data behind technical details", () => {
+        const markup = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")
+        assert.match(markup, /id="operator-optimization-phase"/u)
+        assert.match(markup, /id="operator-optimization-progress"/u)
+        assert.match(markup, /id="operator-optimization-direction-summary"/u)
+        assert.match(markup, /id="operator-optimization-result"/u)
+        assert.match(markup, /id="operator-optimization-decision"/u)
+        assert.match(markup, /<details id="operator-technical-details"[^>]*>/u)
+        assert.doesNotMatch(markup, /<details id="operator-technical-details"[^>]*\sopen/u)
+        const technicalDetails = markup.match(/<details id="operator-technical-details"[\s\S]*?<\/details>/u)?.[0] ?? ""
+        for (const id of [
+            "operator-optimization-frozen",
+            "operator-optimization-timeline",
+            "operator-optimization-installations",
+            "operator-scope",
+            "operator-budget",
+            "operator-child-jobs",
+            "operator-artifacts",
+        ]) assert.match(technicalDetails, new RegExp(`id="${id}"`, "u"))
     })
 
     it("builds setup requests only from capability-backed Runtime and model catalogs", () => {
@@ -1655,6 +1677,42 @@ describe("multi-Epoch Optimization workbench", () => {
         ])
         assert.equal(completed.epochs[1].analysis.regressionCount, 0)
         assert.equal(completed.stopReason, "target_achieved")
+    })
+
+    it("derives a readable phase, Epoch progress, baseline comparison, and required action", () => {
+        assert.deepEqual(optimizationUserSummaryView({
+            state: "waiting_approval",
+            currentEpoch: 2,
+            limits: {maxEpochs: 5},
+            optimizationDirection: "  重点改善异常下钻  ",
+            epochs: [{
+                number: 1,
+                analysis: {score: 82, baselineScoreDelta: 0, passRate: 0.75, regressionCount: 1},
+            }, {
+                number: 2,
+                analysis: {score: 94, baselineScoreDelta: 12, passRate: 1, regressionCount: 0},
+            }],
+        }), {
+            phase: "waiting_approval",
+            currentEpoch: 2,
+            maxEpochs: 5,
+            direction: "重点改善异常下钻",
+            latestResult: {
+                epoch: 2,
+                score: 94,
+                baselineScore: 82,
+                baselineScoreDelta: 12,
+                passRate: 1,
+                regressionCount: 0,
+            },
+            action: "final_approval",
+        })
+        assert.equal(optimizationUserSummaryView({
+            state: "needs_recovery",
+            currentEpoch: 0,
+            limits: {maxEpochs: 3},
+            epochs: [],
+        }).action, "recovery")
     })
 
     it("disables forward actions while restoring and exposes exact recovery targets", () => {

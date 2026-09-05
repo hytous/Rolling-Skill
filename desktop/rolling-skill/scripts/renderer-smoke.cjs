@@ -2152,6 +2152,12 @@ async function run() {
             ?.querySelector(".operator-job-title")?.textContent,
         sessionTitle: document.querySelector("#operator-session-title").textContent,
         frozen: document.querySelector("#operator-optimization-frozen").textContent,
+        phase: document.querySelector("#operator-optimization-phase")?.textContent ?? "",
+        progress: document.querySelector("#operator-optimization-progress")?.textContent ?? "",
+        direction: document.querySelector("#operator-optimization-direction-summary")?.textContent ?? "",
+        technicalOpen: document.querySelector("#operator-technical-details")?.open ?? null,
+        genericApprovalHidden: document.querySelector("#operator-approval-queue")
+            ?.closest("section")?.classList.contains("hidden") ?? false,
         actions: [
             document.querySelector("#operator-composer-send"),
             document.querySelector("[data-optimization-action=pause]"),
@@ -2164,6 +2170,11 @@ async function run() {
         optimizationChrome.sessionTitle !== "Skill 自动优化 · billing-cost-analysis · optimization" ||
         !optimizationChrome.frozen.includes("优化方向 重点改善异常下钻") ||
         !optimizationChrome.frozen.includes("Rolling Skill Optimization Playbook v1") ||
+        !optimizationChrome.phase.includes("改进") ||
+        !optimizationChrome.progress.includes("1/5") ||
+        !optimizationChrome.direction.includes("重点改善异常下钻") ||
+        optimizationChrome.technicalOpen !== false ||
+        !optimizationChrome.genericApprovalHidden ||
         optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
         !optimizationChrome.actions[0].includes("primary") ||
         !optimizationChrome.actions[2].includes("operator-action-danger")
@@ -2183,8 +2194,21 @@ async function run() {
         throw new Error("Hidden Optimization progress triggered active-panel rendering")
     }
     await inspect(window, `document.querySelector(${JSON.stringify(optimizationJobSelector)}).click()`)
-    await waitFor(window, 'document.querySelector("#operator-optimization-timeline").textContent.includes("82") && document.querySelector("#operator-optimization-budget").textContent.includes("2")')
+    await waitFor(window, 'document.querySelector("#operator-optimization-result").textContent.includes("94") && document.querySelector("#operator-optimization-result").textContent.includes("82") && document.querySelector("#operator-optimization-budget").textContent.includes("2")')
     await waitFor(window, 'document.querySelector("[data-operator-approval-decision=approve]")')
+    const optimizationDecision = await inspect(window, `(() => ({
+        text: document.querySelector("#operator-optimization-decision")?.textContent ?? "",
+        genericApprovalHidden: document.querySelector("#operator-approval-queue")
+            ?.closest("section")?.classList.contains("hidden") ?? false,
+        approvalButtons: document.querySelectorAll("#operator-optimization-actions [data-operator-approval-decision]").length,
+    }))()`)
+    if (
+        !optimizationDecision.text.includes("需要") ||
+        !optimizationDecision.text.includes("安装改进版") ||
+        !optimizationDecision.text.includes("Runtime") ||
+        !optimizationDecision.genericApprovalHidden ||
+        optimizationDecision.approvalButtons !== 2
+    ) throw new Error(`Optimization final decision is not user-readable: ${JSON.stringify(optimizationDecision)}`)
     await inspect(window, 'document.querySelector("[data-operator-approval-decision=approve]").click()')
     await waitFor(window, 'document.querySelector("#operator-optimization-budget").textContent.includes("released-install-smoke")')
     const optimizationEvidenceBeforeSwitch = await inspect(window, `(() => ({

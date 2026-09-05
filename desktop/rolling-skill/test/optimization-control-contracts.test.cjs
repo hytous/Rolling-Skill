@@ -171,6 +171,20 @@ describe("optimization control contracts", () => {
         }), (error) => error.code === "INVALID_RESULT")
     })
 
+    it("preserves the bounded baseline score delta needed by the final user comparison", () => {
+        const output = directedRunOutput("waiting_approval")
+        output.run.epochs[0].analysis = {
+            score: 94,
+            scoreDelta: 12,
+            baselineScoreDelta: 12,
+            passRate: 1,
+            regressionCount: 0,
+        }
+
+        const parsed = parseControlOutput("optimization.get", output)
+        assert.equal(parsed.run.epochs[0].analysis.baselineScoreDelta, 12)
+    })
+
     it("accepts compact Epoch-only start and preflight inputs above the old 100-Epoch cap", () => {
         const preflight = parseControlInput("optimization.preflight", {
             ...compactConfig(),

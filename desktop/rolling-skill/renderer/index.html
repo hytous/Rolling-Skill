@@ -454,35 +454,62 @@
 
                     <aside id="operator-status-panel" class="operator-status-panel">
                         <section id="operator-optimization-panel" class="operator-side-section hidden">
-                            <h2 data-i18n="operatorMultiEpochOptimization">Multi-Epoch Optimization</h2>
-                            <div id="operator-optimization-frozen" class="operator-compact-copy"></div>
-                            <div id="operator-optimization-timeline" class="operator-optimization-timeline"></div>
-                            <div id="operator-optimization-installations" class="operator-side-list"></div>
-                            <div id="operator-optimization-budget" class="operator-compact-copy"></div>
+                            <div class="operator-optimization-summary-head">
+                                <div>
+                                    <span class="panel-kicker" data-i18n="operatorOptimizationProgress">Optimization progress</span>
+                                    <strong id="operator-optimization-phase"></strong>
+                                </div>
+                                <span id="operator-optimization-progress" class="operator-optimization-progress"></span>
+                            </div>
+                            <p id="operator-optimization-status-copy" class="operator-compact-copy"></p>
+                            <p id="operator-optimization-direction-summary" class="operator-optimization-direction-summary"></p>
+                            <div id="operator-optimization-result" class="operator-optimization-result"></div>
+                            <div id="operator-optimization-decision" class="operator-optimization-decision hidden" role="status"></div>
                             <div id="operator-optimization-recovery" class="operator-optimization-recovery"></div>
                             <p id="operator-optimization-stop-warning" class="operator-optimization-stop-warning hidden" data-i18n="operatorStopWarning">Stopping cancels queued work, interrupts current work, and restores Runtime Skills.</p>
                             <div id="operator-optimization-actions" class="operator-inline-actions"></div>
                         </section>
-                        <section>
-                            <h2 data-i18n="operatorScope">Scope</h2>
-                            <p id="operator-scope" class="operator-compact-copy" data-i18n="operatorNoScope">No scope selected</p>
-                        </section>
-                        <section>
-                            <h2 data-i18n="operatorBudget">Budget</h2>
-                            <p id="operator-budget" class="operator-compact-copy" data-i18n="operatorNoBudget">No budget details</p>
-                        </section>
-                        <section class="operator-side-section">
-                            <h2 data-i18n="operatorChildJobs">Child Jobs</h2>
-                            <div id="operator-child-jobs" class="operator-side-list"></div>
-                        </section>
-                        <section class="operator-side-section">
-                            <h2 data-i18n="operatorArtifacts">Artifacts</h2>
-                            <div id="operator-artifacts" class="operator-side-list"></div>
-                        </section>
-                        <section class="operator-side-section approval-section">
+                        <section id="operator-approval-section" class="operator-side-section approval-section hidden">
                             <h2 data-i18n="operatorApprovalQueue">Approval queue</h2>
                             <div id="operator-approval-queue" class="operator-side-list"></div>
                         </section>
+                        <details id="operator-technical-details" class="operator-technical-details">
+                            <summary data-i18n="operatorTechnicalDetails">Technical details</summary>
+                            <div class="operator-technical-body">
+                                <section id="operator-optimization-frozen-section" class="hidden">
+                                    <h3 data-i18n="operatorFrozenInputs">Frozen inputs</h3>
+                                    <div id="operator-optimization-frozen" class="operator-compact-copy"></div>
+                                </section>
+                                <section id="operator-optimization-timeline-section" class="hidden">
+                                    <h3 data-i18n="operatorEpochHistory">Epoch evaluation history</h3>
+                                    <div id="operator-optimization-timeline" class="operator-optimization-timeline"></div>
+                                </section>
+                                <section id="operator-optimization-installations-section" class="hidden">
+                                    <h3 data-i18n="operatorInstallationDetails">Runtime installations</h3>
+                                    <div id="operator-optimization-installations" class="operator-side-list"></div>
+                                </section>
+                                <section id="operator-optimization-internal-section" class="hidden">
+                                    <h3 data-i18n="operatorInternalState">Internal state</h3>
+                                    <div id="operator-optimization-budget" class="operator-compact-copy"></div>
+                                </section>
+                                <section id="operator-scope-section">
+                                    <h3 data-i18n="operatorScope">Scope</h3>
+                                    <p id="operator-scope" class="operator-compact-copy" data-i18n="operatorNoScope">No scope selected</p>
+                                </section>
+                                <section id="operator-budget-section">
+                                    <h3 data-i18n="operatorBudget">Budget</h3>
+                                    <p id="operator-budget" class="operator-compact-copy" data-i18n="operatorNoBudget">No budget details</p>
+                                </section>
+                                <section id="operator-child-jobs-section">
+                                    <h3 data-i18n="operatorChildJobs">Child Jobs</h3>
+                                    <div id="operator-child-jobs" class="operator-side-list"></div>
+                                </section>
+                                <section id="operator-artifacts-section">
+                                    <h3 data-i18n="operatorArtifacts">Artifacts</h3>
+                                    <div id="operator-artifacts" class="operator-side-list"></div>
+                                </section>
+                            </div>
+                        </details>
                     </aside>
                     </div>
                 </section>

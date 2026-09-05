@@ -495,7 +495,7 @@ function advanceSmokeOptimization() {
             candidateArtifactId: "candidate-artifact-1",
             candidate: {versionId: "candidate-smoke-1", commit: "c".repeat(40), contentDigest: `sha256:${"c".repeat(64)}`},
             installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-1", lastVerifiedDigest: `sha256:${"c".repeat(64)}`}],
-            analysis: {score: 82, scoreDelta: 8, passRate: 0.75, regressionCount: 1},
+            analysis: {score: 82, scoreDelta: 8, baselineScoreDelta: 0, passRate: 0.75, regressionCount: 1},
             decision: {action: "continue", rationale: "继续第二轮"},
         }, {
             number: 2,
@@ -503,7 +503,7 @@ function advanceSmokeOptimization() {
             candidateArtifactId: "candidate-artifact-2",
             candidate: {versionId: "candidate-smoke-2", commit: "d".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`},
             installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-2", lastVerifiedDigest: `sha256:${"d".repeat(64)}`}],
-            analysis: {score: 94, scoreDelta: 12, passRate: 1, regressionCount: 0},
+            analysis: {score: 94, scoreDelta: 12, baselineScoreDelta: 12, passRate: 1, regressionCount: 0},
             decision: {action: "release-install", rationale: "候选版本达到目标，等待一次最终审批。"},
         }]
         smokeOptimizationRun.checkpoint = {

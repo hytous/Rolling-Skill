@@ -637,6 +637,7 @@ const publicOptimizationInstallation = z.object({
 const publicOptimizationAnalysis = z.object({
     score: z.number().finite().min(0).max(100).nullable().optional(),
     scoreDelta: z.number().finite().min(-100).max(100).nullable().optional(),
+    baselineScoreDelta: z.number().finite().min(-100).max(100).nullable().optional(),
     passRate: z.number().finite().min(0).max(1).nullable().optional(),
     regressionCount: z.number().int().min(0).max(100_000),
     executionFailureCount: z.number().int().min(0).max(100_000).optional(),
