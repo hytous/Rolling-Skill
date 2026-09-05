@@ -437,10 +437,22 @@ describe("local-first desktop surface", () => {
             "settings-auto-capture-weekday",
             "settings-auto-capture-model",
             "settings-auto-capture-effort",
-            "settings-auto-capture-dataset",
+            "settings-auto-capture-targets",
+            "settings-auto-capture-target-list",
             "settings-auto-capture-status",
             "settings-auto-capture-last-success",
         ]) assert.match(html, new RegExp(`id="${id}"`))
+
+        assert.doesNotMatch(html, /id="settings-auto-capture-dataset"/u)
+        assert.match(html, /automatic-capture-targets\.js/u)
+        assert.match(renderer, /autoCaptureTargets:\s*selectedAutomaticCaptureTargets\(\)/u)
+        assert.match(renderer, /autoCaptureDatasetId:\s*null/u)
+        assert.match(
+            renderer,
+            /targets:\s*\(settings\.autoCaptureProfile\?\.targets\s*\?\?\s*\[\]\)\.map/u,
+        )
+        assert.match(renderer, /settingsAutoCaptureTargetList\.addEventListener\("change"/u)
+        assert.match(renderer, /renderAutomaticCaptureTargets/u)
 
         assert.doesNotMatch(html, /id="settings-auto-capture"\s+type="checkbox"/u)
         assert.doesNotMatch(

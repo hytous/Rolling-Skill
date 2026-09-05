@@ -479,7 +479,8 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /source\.runtimeId[\s\S]{0,180}runtimeDescriptor\?\.runtimeId/u)
         assert.match(main, /automaticCaptureManager\.start\(\)/u)
         assert.match(main, /automaticCaptureManager\?\.stop\(\)/u)
-        assert.match(main, /settings:update[\s\S]{0,240}automaticCaptureManager\?\.reschedule\(\)/u)
+        assert.match(main, /settings:update/u)
+        assert.match(main, /automaticCaptureManager\?\.reschedule\(\)/u)
         assert.match(main, /restartRuntimeNow[\s\S]{0,900}automaticCaptureManager\?\.reschedule\(\)/u)
         assert.match(main, /onChanged:[\s\S]{0,220}handleCurationChanged/u)
     })
@@ -716,6 +717,103 @@ describe("desktop main/preload bridge", () => {
             assert.equal(context.trustedRawCaseSkills().skills.filter((skill) => (
                 skill.id === "skill-1" && skill.name === "billing"
             )).length, 1)
+        } finally {
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
+    it("migrates uniquely named legacy Dataset bindings before saving automatic capture routes", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-capture-route-migration-"))
+        try {
+            const store = new LocalEvaluationStore(join(directory, "evaluation-store.json"))
+            const managedSkill = {
+                id: "skill-billing",
+                repositoryId: "repository-billing",
+                name: "billing-cost-management",
+                description: "Managed billing Skill",
+                status: "valid",
+            }
+            const managedSkillManager = {
+                catalog: () => ({
+                    repositories: [{id: managedSkill.repositoryId}],
+                    skills: [managedSkill],
+                }),
+            }
+            const legacyReferences = [
+                {
+                    schemaVersion: "rolling-skill-skill-reference/v1",
+                    name: managedSkill.name,
+                    path: "/runtime/skills/billing/SKILL.md",
+                    scope: "user",
+                    description: "Legacy path binding",
+                    runtimeId: "codex:local",
+                    confirmedAt: "2026-08-13T00:00:00.000Z",
+                },
+                {
+                    schemaVersion: "rolling-skill-skill-reference/v1",
+                    name: managedSkill.name,
+                    path: null,
+                    scope: "runtime",
+                    description: "Legacy name-only binding",
+                    runtimeId: "deepseek-harness:local",
+                    providerId: "deepseek-harness",
+                    workspaceRoot: "/workspace/project",
+                    evidencePrecision: "name-only",
+                    confirmedAt: "2026-08-23T00:00:00.000Z",
+                },
+            ]
+            const datasets = legacyReferences.map((skillReference, index) => store.createDataset({
+                name: `Legacy billing ${index + 1}`,
+                skillReference,
+            }))
+            store.updateSettings({autoCaptureDatasetId: datasets[0].id})
+            const context = mainFunctionContext(
+                "digestSkillIdentity",
+                "listModelsForRuntimeFromControl",
+                {
+                    activeRuntimeSkillCache: null,
+                    clientGeneration: 1,
+                    createHash,
+                    managedSkillManager,
+                    normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                    rawCaseStore: {list: () => []},
+                    rendererAliasContext: {getStore: () => null},
+                    runtimeDescriptor: {runtimeId: "codex:local", providerId: "codex"},
+                    store,
+                    workspaceRoot: "/workspace/project",
+                },
+            )
+
+            const listed = context.listDatasetsForControl()
+            assert.deepEqual(
+                datasets.map((dataset) => listed.find((entry) => entry.id === dataset.id)
+                    .skillReference.id),
+                [managedSkill.id, managedSkill.id],
+            )
+            const targets = datasets.map((dataset) => ({
+                skillId: managedSkill.id,
+                datasetId: dataset.id,
+            }))
+            context.migrateAutomaticCaptureTargetBindings([targets[1]])
+            const target = [targets[0]]
+            context.migrateAutomaticCaptureTargetBindings(target)
+            store.updateSettings({
+                autoCaptureDatasetId: null,
+                autoCaptureTargets: target,
+            })
+
+            const reopened = new LocalEvaluationStore(store.path).read()
+            assert.deepEqual(reopened.settings.autoCaptureProfile.targets, target)
+            assert.equal(
+                reopened.datasets.find((dataset) => dataset.id === datasets[0].id)
+                    .skillReference.id,
+                managedSkill.id,
+            )
+            assert.equal(
+                reopened.datasets.find((dataset) => dataset.id === datasets[1].id)
+                    .skillReference.id,
+                managedSkill.id,
+            )
         } finally {
             rmSync(directory, {recursive: true, force: true})
         }

@@ -461,6 +461,38 @@ describe("local evaluation store", () => {
         )
     })
 
+    it("migrates an exact legacy name-only Dataset binding to a managed Skill", () => {
+        const {path, store} = fixture()
+        const legacy = {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            name: "billing-cost-management",
+            path: null,
+            scope: "runtime",
+            description: "Discovered by the DeepSeek Harness provider",
+            runtimeId: "deepseek-harness:local",
+            providerId: "deepseek-harness",
+            workspaceRoot: "/workspace/project",
+            evidencePrecision: "name-only",
+            confirmedAt: "2026-08-23T00:00:00.000Z",
+        }
+        const managed = managedSkillReference()
+        const created = store.createDataset({
+            name: "Legacy name-only billing",
+            skillReference: legacy,
+        })
+
+        const migrated = store.migrateDatasetSkillReference(created.id, {
+            expectedLegacyReference: legacy,
+            managedSkillReference: managed,
+        })
+
+        assert.deepEqual(migrated.skillReference, managed)
+        assert.deepEqual(
+            new LocalEvaluationStore(path).getDataset(created.id).skillReference,
+            managed,
+        )
+    })
+
     it("persists a complete name-only Runtime Skill identity without weakening path validation", () => {
         const {path, store} = fixture()
         const nameOnlyReference = {

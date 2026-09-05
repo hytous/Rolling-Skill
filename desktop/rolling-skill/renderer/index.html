@@ -765,13 +765,12 @@
                             <select id="settings-auto-capture-effort"></select>
                         </label>
                     </div>
-                    <div class="settings-grid">
-                        <label id="settings-auto-capture-dataset-field" class="settings-field automatic-capture-preferred">
-                            <span data-i18n="preferredDataset">Preferred dataset</span>
-                            <select id="settings-auto-capture-dataset"></select>
-                            <small data-i18n="preferredDatasetHelp">Used only when its Skill matches. Leave automatic routing selected to require one unambiguous dataset.</small>
-                        </label>
-                    </div>
+                    <fieldset id="settings-auto-capture-targets" class="automatic-capture-targets">
+                        <legend data-i18n="candidateSkills">Candidate Skills and datasets</legend>
+                        <p data-i18n="candidateSkillsDescription">Only checked managed Skills are analyzed. Each matched Case is sent to the dataset selected on that row.</p>
+                        <div id="settings-auto-capture-target-list" class="automatic-capture-target-list"></div>
+                        <p id="settings-auto-capture-target-error" class="automatic-capture-target-error hidden" role="alert" data-i18n="automaticTargetsRequired">Select at least one available Skill and target dataset while automatic capture is enabled.</p>
+                    </fieldset>
                 </section>
                 </div>
 
@@ -1094,6 +1093,7 @@
         <script src="evaluation-format.js"></script>
         <script src="case-calibration-batch.js"></script>
         <script src="case-refresh-batch.js"></script>
+        <script src="automatic-capture-targets.js"></script>
         <script src="operator-workbench.js"></script>
         <script src="renderer.js"></script>
     </body>

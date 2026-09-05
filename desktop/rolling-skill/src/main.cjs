@@ -1177,9 +1177,82 @@ function actualLocalSkillIdentity(input = {}) {
     ])
 }
 
+function managedSkillReferenceForLegacyDataset(reference) {
+    if (!reference || reference.evidencePrecision === "managed") return null
+    const name = normalizedSkillName(reference.name)
+    if (!name) return null
+    let catalog
+    try {
+        catalog = managedSkillManager.catalog()
+    } catch {
+        return null
+    }
+    const matches = (catalog?.skills ?? []).filter((skill) => (
+        skill?.status === "valid" &&
+        normalizedSkillName(skill.name) === name &&
+        typeof skill.id === "string" &&
+        skill.id.trim() &&
+        typeof skill.repositoryId === "string" &&
+        skill.repositoryId.trim()
+    ))
+    if (matches.length !== 1) return null
+    const skill = matches[0]
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        evidencePrecision: "managed",
+        id: skill.id,
+        repositoryId: skill.repositoryId,
+        name: skill.name,
+        path: null,
+        scope: "managed",
+        description: skill.description ?? reference.description ?? null,
+        runtimeId: null,
+        providerId: null,
+        confirmedAt: new Date().toISOString(),
+    }
+}
+
 function datasetSkillIdentity(reference) {
     const stableId = typeof reference?.id === "string" ? reference.id.trim() : ""
-    return stableId || actualLocalSkillIdentity(reference)
+    return stableId ||
+        managedSkillReferenceForLegacyDataset(reference)?.id ||
+        actualLocalSkillIdentity(reference)
+}
+
+function migrateAutomaticCaptureTargetBindings(targets) {
+    if (!Array.isArray(targets)) return targets
+    const skillIds = new Set()
+    const migrations = []
+    for (const target of targets) {
+        const skillId = typeof target?.skillId === "string" ? target.skillId.trim() : ""
+        const datasetId = typeof target?.datasetId === "string" ? target.datasetId.trim() : ""
+        if (!skillId || !datasetId) {
+            throw new Error("Automatic capture candidate Skill and Dataset are required")
+        }
+        if (skillIds.has(skillId)) {
+            throw new Error("Automatic capture candidate Skill is duplicated")
+        }
+        skillIds.add(skillId)
+        const dataset = store.getDataset(datasetId)
+        if (dataset.skillReference?.id === skillId) continue
+        const managedSkillReference = managedSkillReferenceForLegacyDataset(
+            dataset.skillReference,
+        )
+        if (managedSkillReference?.id !== skillId) {
+            throw new Error(
+                "Automatic capture candidate Skill does not match the Dataset binding",
+            )
+        }
+        migrations.push({
+            datasetId,
+            expectedLegacyReference: dataset.skillReference,
+            managedSkillReference,
+        })
+    }
+    for (const migration of migrations) {
+        store.migrateDatasetSkillReference(migration.datasetId, migration)
+    }
+    return targets
 }
 
 function managedSkillIdForRuntimeSkill(runtimeSkill) {
@@ -3459,7 +3532,15 @@ function installIpc() {
     )
     ipcMain.handle("datasets:reveal", revealLocalData)
     ipcMain.handle("settings:update", (_event, input) => {
-        const settings = store.updateSettings(input)
+        const prepared = input?.autoCaptureTargets === undefined
+            ? input
+            : {
+                  ...input,
+                  autoCaptureTargets: migrateAutomaticCaptureTargetBindings(
+                      input.autoCaptureTargets,
+                  ),
+              }
+        const settings = store.updateSettings(prepared)
         client?.setExecutionPolicy?.(currentExecutionPolicy())
         automaticCaptureManager?.reschedule()
         return settings

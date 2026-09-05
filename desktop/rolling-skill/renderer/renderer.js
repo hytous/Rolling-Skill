@@ -2,6 +2,12 @@ const commandActivity = globalThis.RollingSkillCommandActivity
 const {formatEvaluationDuration} = globalThis.RollingSkillEvaluationFormat
 const {CaseCalibrationBatch} = globalThis.RollingSkillCalibrationBatch
 const {CaseRefreshBatch} = globalThis.RollingSkillRefreshBatch
+const {
+    candidateDatasetOptions,
+    candidateSkillRows,
+    captureTargetsValid,
+    initialCaptureTargets,
+} = globalThis.RollingSkillAutomaticCaptureTargets
 const UNIFIED_SCORING_MODEL = "unified-100/v1"
 
 const translations = {
@@ -88,9 +94,16 @@ const translations = {
         weekdayFriday: "Friday",
         weekdaySaturday: "Saturday",
         weekdaySunday: "Sunday",
-        preferredDataset: "Preferred dataset",
-        preferredDatasetHelp: "Used only when its Skill matches. Leave automatic routing selected to require one unambiguous dataset.",
-        automaticDatasetRouting: "Route automatically",
+        candidateSkills: "Candidate Skills and datasets",
+        candidateSkillsDescription: "Only checked managed Skills are analyzed. Each matched Case is sent to the dataset selected on that row.",
+        candidateSkillNoDataset: "No bound dataset is available. Fully automatic mode also requires a published Rubric.",
+        candidateSkillUnavailable: "This saved candidate Skill is unavailable. Uncheck it to remove the stale route.",
+        candidateDatasetOnlyOne: "Only one dataset is currently available for this Skill.",
+        datasetRubricRequiredSuffix: " (no published Rubric)",
+        noCandidateSkills: "No managed Skills are available. Import a Skill and bind a dataset first.",
+        automaticDataset: "Target dataset",
+        selectDataset: "Select dataset",
+        automaticTargetsRequired: "Select at least one available Skill and target dataset while automatic capture is enabled.",
         selectSkill: "Select an enabled Skill",
         unavailableSkill: "Previously selected Skill is unavailable",
         datasetSkill: "Dataset Skill",
@@ -907,9 +920,16 @@ const translations = {
         weekdayFriday: "星期五",
         weekdaySaturday: "星期六",
         weekdaySunday: "星期日",
-        preferredDataset: "首选数据集",
-        preferredDatasetHelp: "仅在 Skill 匹配时使用；选择自动路由时，必须只有一个无歧义数据集才会自动保存。",
-        automaticDatasetRouting: "自动路由",
+        candidateSkills: "候选 Skill 与数据集",
+        candidateSkillsDescription: "只检测勾选的受管 Skill，并将命中的 Case 送到该行选择的数据集。",
+        candidateSkillNoDataset: "没有绑定的数据集；完全自动模式还要求数据集已发布评分标准。",
+        candidateSkillUnavailable: "这个已保存的候选 Skill 当前不可用；取消勾选即可移除旧映射。",
+        candidateDatasetOnlyOne: "当前只有一个可用数据集。",
+        datasetRubricRequiredSuffix: "（未发布评分标准）",
+        noCandidateSkills: "暂无可选的受管 Skill，请先导入 Skill 并绑定数据集。",
+        automaticDataset: "目标数据集",
+        selectDataset: "选择数据集",
+        automaticTargetsRequired: "开启自动沉淀时，请至少选择一个可用 Skill 及其目标数据集。",
         selectSkill: "请选择一个已启用的 Skill",
         unavailableSkill: "之前选择的 Skill 当前不可用",
         datasetSkill: "数据集绑定的 Skill",
@@ -1712,8 +1732,10 @@ const state = {
             modelId: null,
             effort: null,
             datasetId: null,
+            targets: [],
         },
     },
+    automaticCaptureTargetsDraft: [],
     models: [],
     selectedTaskModelId: null,
     selectedTaskEffort: null,
@@ -1952,8 +1974,9 @@ const elements = {
     settingsAutoCaptureWeekdayField: document.querySelector("#settings-auto-capture-weekday-field"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
     settingsAutoCaptureEffort: document.querySelector("#settings-auto-capture-effort"),
-    settingsAutoCaptureDataset: document.querySelector("#settings-auto-capture-dataset"),
-    settingsAutoCaptureDatasetField: document.querySelector("#settings-auto-capture-dataset-field"),
+    settingsAutoCaptureTargets: document.querySelector("#settings-auto-capture-targets"),
+    settingsAutoCaptureTargetList: document.querySelector("#settings-auto-capture-target-list"),
+    settingsAutoCaptureTargetError: document.querySelector("#settings-auto-capture-target-error"),
     settingsAutoCaptureStatus: document.querySelector("#settings-auto-capture-status"),
     settingsAutoCaptureLastSuccess: document.querySelector("#settings-auto-capture-last-success"),
     discardDialog: document.querySelector("#discard-curation-dialog"),
@@ -2347,6 +2370,10 @@ function applySettings(settings) {
             modelId: settings.autoCaptureProfile?.modelId ?? null,
             effort: settings.autoCaptureProfile?.effort ?? null,
             datasetId: settings.autoCaptureProfile?.datasetId ?? null,
+            targets: (settings.autoCaptureProfile?.targets ?? []).map(({skillId, datasetId}) => ({
+                skillId,
+                datasetId,
+            })),
         },
     }
     state.automaticCaptureStatus = {
@@ -2521,6 +2548,91 @@ function renderCaseDatasetSkillStatus() {
     }
 }
 
+function selectedAutomaticCaptureTargets() {
+    return state.automaticCaptureTargetsDraft.map(({skillId, datasetId}) => ({
+        skillId,
+        datasetId,
+    }))
+}
+
+function automaticCaptureTargetsAreValid() {
+    return captureTargetsValid(
+        state.automaticCaptureTargetsDraft,
+        state.managedSkills.skills,
+        state.datasets,
+        elements.settingsAutoCaptureMode.value,
+    )
+}
+
+function renderAutomaticCaptureTargets() {
+    const mode = elements.settingsAutoCaptureMode.value
+    const targets = state.automaticCaptureTargetsDraft
+    const rows = candidateSkillRows(state.managedSkills.skills, targets)
+    elements.settingsAutoCaptureTargetList.replaceChildren()
+    for (const skill of rows) {
+        const target = targets.find((entry) => entry.skillId === skill.id)
+        const datasets = candidateDatasetOptions(state.datasets, skill.id, mode)
+        const selectable = datasets.filter((dataset) => !dataset.disabled)
+        const row = node("div", "automatic-capture-target")
+        const skillLabel = node("label", "automatic-capture-target-skill")
+        const checkbox = document.createElement("input")
+        checkbox.type = "checkbox"
+        checkbox.checked = Boolean(target)
+        checkbox.disabled = !target && (skill.status !== "valid" || selectable.length === 0)
+        checkbox.dataset.automaticCaptureSkillId = skill.id
+        const skillCopy = document.createElement("span")
+        const skillName = node("strong", "", skill.name)
+        const detail = node(
+            "small",
+            "",
+            skill.status !== "valid"
+                ? t("candidateSkillUnavailable")
+                : datasets.length === 0
+                  ? t("candidateSkillNoDataset")
+                  : skill.description ?? "",
+        )
+        skillCopy.append(skillName, detail)
+        skillLabel.append(checkbox, skillCopy)
+
+        const datasetWrap = node("div", "automatic-capture-target-dataset")
+        const select = document.createElement("select")
+        select.setAttribute("aria-label", `${skill.name} ${t("automaticDataset")}`)
+        select.dataset.automaticCaptureDatasetSkillId = skill.id
+        select.disabled = !target || skill.status !== "valid"
+        select.append(node("option", "", t("selectDataset")))
+        select.options[0].value = ""
+        for (const dataset of datasets) {
+            const option = node(
+                "option",
+                "",
+                `${dataset.name}${dataset.disabled ? t("datasetRubricRequiredSuffix") : ""}`,
+            )
+            option.value = dataset.id
+            option.disabled = dataset.disabled
+            select.append(option)
+        }
+        select.value = target?.datasetId ?? ""
+        datasetWrap.append(select)
+        if (skill.status === "valid" && selectable.length === 1) {
+            datasetWrap.append(node("small", "", t("candidateDatasetOnlyOne")))
+        }
+        row.classList.toggle("invalid", Boolean(target) && (
+            skill.status !== "valid" ||
+            !selectable.some((dataset) => dataset.id === target.datasetId)
+        ))
+        row.append(skillLabel, datasetWrap)
+        elements.settingsAutoCaptureTargetList.append(row)
+    }
+    if (!rows.length) {
+        elements.settingsAutoCaptureTargetList.append(
+            node("p", "automatic-capture-target-empty", t("noCandidateSkills")),
+        )
+    }
+    const valid = automaticCaptureTargetsAreValid()
+    elements.settingsAutoCaptureTargetError.classList.toggle("hidden", valid)
+    elements.saveSettings.disabled = !valid
+}
+
 function renderAutomaticCaptureSettingsVisibility() {
     const mode = elements.settingsAutoCaptureMode.value
     const captureOff = mode === "off"
@@ -2532,8 +2644,7 @@ function renderAutomaticCaptureSettingsVisibility() {
     ]) control.disabled = captureOff
     elements.settingsAutoCaptureWeekdayField.classList.toggle("hidden", captureOff || !weekly)
     elements.settingsAutoCaptureWeekday.disabled = captureOff || !weekly
-    elements.settingsAutoCaptureDatasetField.classList.toggle("hidden", mode !== "automatic")
-    elements.settingsAutoCaptureDataset.disabled = mode !== "automatic"
+    renderAutomaticCaptureTargets()
 }
 
 function renderSettingsForm() {
@@ -2599,17 +2710,10 @@ function renderSettingsForm() {
     elements.settingsAutoCaptureWeekday.value = String(
         settings.autoCaptureProfile?.schedule?.weekday ?? 1,
     )
-    elements.settingsAutoCaptureDataset.replaceChildren()
-    const automatic = node("option", "", t("automaticDatasetRouting"))
-    automatic.value = ""
-    elements.settingsAutoCaptureDataset.append(automatic)
-    for (const dataset of state.datasets) {
-        const option = node("option", "", dataset.name)
-        option.value = dataset.id
-        elements.settingsAutoCaptureDataset.append(option)
-    }
-    elements.settingsAutoCaptureDataset.value =
-        settings.autoCaptureProfile?.datasetId ?? ""
+    state.automaticCaptureTargetsDraft = initialCaptureTargets(
+        settings.autoCaptureProfile,
+        state.datasets,
+    )
     renderAutomaticCaptureSettingsVisibility()
     renderCaptureStatus()
 }
@@ -2636,6 +2740,7 @@ function refreshOpenSettingsOptions() {
     populateEffortSelect(elements.settingsJudgeEffort, judgeEffort, judgeModel)
     populateModelSelect(elements.settingsAutoCaptureModel, captureModel)
     populateEffortSelect(elements.settingsAutoCaptureEffort, captureEffort, captureModel)
+    renderAutomaticCaptureTargets()
 }
 
 async function openSettings() {
@@ -2651,6 +2756,10 @@ async function openSettings() {
 }
 
 async function saveSettings() {
+    if (!automaticCaptureTargetsAreValid()) {
+        renderAutomaticCaptureTargets()
+        return
+    }
     elements.saveSettings.disabled = true
     try {
         const settings = await window.rollingSkill.updateSettings({
@@ -2671,7 +2780,8 @@ async function saveSettings() {
             autoCaptureWeekday: Number(elements.settingsAutoCaptureWeekday.value),
             autoCaptureModelId: elements.settingsAutoCaptureModel.value,
             autoCaptureEffort: elements.settingsAutoCaptureEffort.value,
-            autoCaptureDatasetId: elements.settingsAutoCaptureDataset.value || null,
+            autoCaptureDatasetId: null,
+            autoCaptureTargets: selectedAutomaticCaptureTargets(),
         })
         applySettings(settings)
         state.evaluationJudgeConfiguration = {
@@ -9074,6 +9184,36 @@ elements.settingsAutoCaptureCadence.addEventListener(
     "change",
     renderAutomaticCaptureSettingsVisibility,
 )
+elements.settingsAutoCaptureTargetList.addEventListener("change", (event) => {
+    const skillToggle = event.target.closest("[data-automatic-capture-skill-id]")
+    if (skillToggle) {
+        const skillId = skillToggle.dataset.automaticCaptureSkillId
+        if (skillToggle.checked) {
+            const datasetId = candidateDatasetOptions(
+                state.datasets,
+                skillId,
+                elements.settingsAutoCaptureMode.value,
+            ).find((dataset) => !dataset.disabled)?.id ?? ""
+            state.automaticCaptureTargetsDraft = [
+                ...state.automaticCaptureTargetsDraft.filter((target) => target.skillId !== skillId),
+                {skillId, datasetId},
+            ]
+        } else {
+            state.automaticCaptureTargetsDraft = state.automaticCaptureTargetsDraft.filter(
+                (target) => target.skillId !== skillId,
+            )
+        }
+        renderAutomaticCaptureTargets()
+        return
+    }
+    const datasetSelect = event.target.closest("[data-automatic-capture-dataset-skill-id]")
+    if (!datasetSelect) return
+    const skillId = datasetSelect.dataset.automaticCaptureDatasetSkillId
+    state.automaticCaptureTargetsDraft = state.automaticCaptureTargetsDraft.map((target) => (
+        target.skillId === skillId ? {...target, datasetId: datasetSelect.value} : target
+    ))
+    renderAutomaticCaptureTargets()
+})
 elements.archivedCurations.addEventListener("click", () => void toggleArchivedCurations())
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
 elements.chooseRuntime.addEventListener("click", () => {

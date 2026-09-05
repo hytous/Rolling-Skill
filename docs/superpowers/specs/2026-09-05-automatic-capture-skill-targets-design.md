@@ -13,13 +13,14 @@ Bring the Electron App's automatic-capture settings to parity with the DSH plugi
 - Unchecking a Skill removes it from scope.
 - Only Datasets bound to that exact managed Skill appear in its select.
 - In `automatic` mode, Datasets without a published Rubric are visible but disabled; in `scheduled` mode they remain selectable because the result only enters Raw Cases.
-- Empty selection means no candidate Skills, rather than “scan every installed Skill”.
+- Whenever automatic capture is enabled, Settings requires at least one valid Skill-to-Dataset route and blocks saving an empty selection. The App never treats an empty selection as “scan every installed Skill”.
 
 ## Persistence and compatibility
 
 - Save the rows through the existing `autoCaptureTargets` setting as `{skillId, datasetId}` pairs.
 - Clear legacy `autoCaptureDatasetId` on every save.
 - When the saved target list is empty but a legacy `datasetId` exists, initialize the UI with a single route derived from that Dataset's bound Skill.
+- When a legacy path-based or Runtime name-only Dataset binding uniquely matches one valid managed Skill by name, present it under that Skill and persist the managed identity before saving the route. Ambiguous names remain unavailable rather than being guessed.
 - Keep unavailable saved Skill rows visible so users can remove or repair stale configuration.
 
 ## Validation
@@ -27,7 +28,7 @@ Bring the Electron App's automatic-capture settings to parity with the DSH plugi
 - A checked Skill must have a Dataset selected.
 - The Dataset must be bound to the same Skill.
 - In fully automatic mode, the Dataset must have an active published Rubric.
-- Invalid rows disable Settings save and show an inline explanation on the row.
+- Invalid rows are visually marked, disable Settings save, and surface the reason through the Settings-level validation message.
 - Runtime-side validation in `LocalEvaluationStore` remains the authority.
 
 ## Architecture
@@ -39,4 +40,3 @@ Add a small renderer helper responsible for candidate-row projection, Dataset el
 - Pure helper tests cover valid Skill rows, stale saved rows, mode-sensitive Dataset eligibility, legacy migration, and validation.
 - Surface tests assert the multi-Skill fieldset and `autoCaptureTargets` persistence wiring.
 - Desktop test suite and renderer smoke test must pass.
-

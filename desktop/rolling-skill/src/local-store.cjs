@@ -1370,11 +1370,9 @@ class LocalEvaluationStore {
         const managedSkillReference = normalizeSkillReference(input.managedSkillReference)
         if (
             !expectedLegacyReference ||
-            expectedLegacyReference.evidencePrecision === "managed" ||
-            expectedLegacyReference.evidencePrecision === "name-only" ||
-            !expectedLegacyReference.path
+            expectedLegacyReference.evidencePrecision === "managed"
         ) {
-            throw new Error("A legacy path Skill binding is required for migration")
+            throw new Error("A legacy Runtime Skill binding is required for migration")
         }
         if (!managedSkillReference || managedSkillReference.evidencePrecision !== "managed") {
             throw new Error("A complete managed Skill identity is required for migration")
