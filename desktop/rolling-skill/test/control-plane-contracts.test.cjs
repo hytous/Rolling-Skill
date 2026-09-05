@@ -107,6 +107,12 @@ const validInputs = {
         skillId: "skill-1",
         idempotencyKey: "dataset-create-1",
     },
+    "datasets.clone": {
+        sourceDatasetId: "dataset-1",
+        name: "Billing clone",
+        caseIds: ["case-1", "case-2"],
+        idempotencyKey: "dataset-clone-1",
+    },
     "datasets.delete": {datasetId: "dataset-1", idempotencyKey: "dataset-delete-1"},
     "datasets.delete_case": {
         datasetId: "dataset-1",
@@ -256,6 +262,14 @@ const validOutputs = {
         }],
     },
     "datasets.create": {dataset: {id: "dataset-1"}},
+    "datasets.clone": {
+        dataset: {id: "dataset-clone"},
+        cases: [
+            {id: "case-clone-1", datasetId: "dataset-clone"},
+            {id: "case-clone-2", datasetId: "dataset-clone"},
+        ],
+        rubricCopied: true,
+    },
     "datasets.delete": {dataset: {id: "dataset-1"}},
     "datasets.delete_case": {case: {id: "case-1", datasetId: "dataset-1"}},
     "evaluations.list": {runs: [], nextCursor: null},
@@ -385,6 +399,7 @@ describe("control-plane contracts", () => {
                 "datasets.list": "datasets.read",
                 "datasets.get": "datasets.read",
                 "datasets.create": "datasets.write",
+                "datasets.clone": "datasets.write",
                 "datasets.delete": "datasets.delete",
                 "datasets.delete_case": "datasets.delete",
                 "evaluations.list": "evaluations.read",
@@ -630,6 +645,7 @@ describe("control-plane contracts", () => {
     it("requires an idempotency key on every expanded mutation", () => {
         for (const method of [
             "datasets.create",
+            "datasets.clone",
             "datasets.delete",
             "datasets.delete_case",
             "skills.create_candidate",
@@ -721,6 +737,27 @@ describe("control-plane contracts", () => {
                 idempotencyKey: " ",
             }),
             /idempotencyKey/u,
+        )
+        assert.throws(
+            () => parseControlInput("datasets.clone", {
+                ...validInputs["datasets.clone"],
+                caseIds: [],
+            }),
+            /caseIds/u,
+        )
+        assert.throws(
+            () => parseControlInput("datasets.clone", {
+                ...validInputs["datasets.clone"],
+                caseIds: ["case-1", "case-1"],
+            }),
+            /caseIds|unique/u,
+        )
+        assert.throws(
+            () => parseControlInput("datasets.clone", {
+                ...validInputs["datasets.clone"],
+                caseIds: Array.from({length: 101}, (_value, index) => `case-${index}`),
+            }),
+            /caseIds/u,
         )
         assert.throws(
             () => parseControlInput("raw_cases.enqueue", {

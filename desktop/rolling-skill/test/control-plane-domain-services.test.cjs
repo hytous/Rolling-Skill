@@ -116,6 +116,24 @@ function fixture(overrides = {}) {
             return structuredClone(run)
         }),
         createDataset: mock.fn((input) => ({id: "dataset-created", ...structuredClone(input)})),
+        cloneDataset: mock.fn((input) => ({
+            dataset: {
+                id: "dataset-cloned",
+                name: input.name,
+                skillReference: {
+                    id: "skill-1",
+                    repositoryId: "repository-1",
+                    name: "billing",
+                },
+            },
+            cases: input.caseIds.map((id, index) => ({
+                id: `case-cloned-${index + 1}`,
+                datasetId: "dataset-cloned",
+                question: `copy of ${id}`,
+            })),
+            rubricVersion: {id: "rubric-cloned", datasetId: "dataset-cloned"},
+        })),
+        getActiveDatasetRubric: mock.fn(() => null),
         deleteDataset: mock.fn((datasetId) => structuredClone(datasets.find((entry) => entry.id === datasetId))),
         deleteCase: mock.fn((datasetId, caseId) => structuredClone(cases.find((entry) => entry.datasetId === datasetId && entry.id === caseId))),
         getCurationSession: mock.fn((id) => structuredClone(curationSessions.find((entry) => entry.id === id))),
@@ -568,12 +586,21 @@ describe("control-plane domain services", () => {
         })
         await services["datasets.create"](datasetInput, snapshotContext(datasetResolution, null))
         const storedReference = evaluationStore.createDataset.mock.calls[0].arguments[0].skillReference
-        assert.equal(storedReference.path, "/private/managed/repository-1/billing")
-        assert.equal(storedReference.name, "billing")
-        assert.equal(storedReference.id, "skill-1")
-        assert.equal(storedReference.providerId, "codex")
-        assert.equal(storedReference.runtimeId, "runtime-1")
-        assert.equal(storedReference.repositoryId, "repository-1")
+        assert.deepEqual(storedReference, {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: "skill-1",
+            repositoryId: "repository-1",
+            name: "billing",
+            path: null,
+            scope: "managed",
+            description: null,
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: storedReference.confirmedAt,
+        })
+        assert.match(storedReference.confirmedAt, /^\d{4}-\d{2}-\d{2}T/u)
+        assert.equal(dependencies.resolveManagedSkillBinding.mock.callCount(), 0)
 
         const diff = await services["skills.diff"]({
             repositoryId: "repository-1",
@@ -621,6 +648,99 @@ describe("control-plane domain services", () => {
                 idempotencyKey: "candidate-forged",
             }, serviceContext()),
             /repository|identity/iu,
+        )
+    })
+
+    it("clones scoped Cases and the active Rubric through one Dataset mutation", async () => {
+        const context = fixture()
+        const source = {
+            id: "dataset-1",
+            name: "Billing",
+            activeRubricVersionId: "rubric-source",
+            skillReference: {
+                evidencePrecision: "managed",
+                id: "skill-1",
+                repositoryId: "repository-1",
+                name: "billing",
+            },
+        }
+        const sourceCases = [
+            {id: "case-1", datasetId: source.id, question: "one"},
+            {id: "case-3", datasetId: source.id, question: "three"},
+        ]
+        context.evaluationStore.listDatasets = mock.fn(() => [source])
+        context.evaluationStore.getDataset = mock.fn(() => source)
+        context.evaluationStore.listCases = mock.fn(() => sourceCases)
+        context.evaluationStore.getActiveDatasetRubric = mock.fn(() => ({
+            id: "rubric-source",
+            datasetId: source.id,
+            rubricDigest: "sha256:rubric",
+        }))
+        const services = createDomainServices(context.dependencies)
+        const input = {
+            sourceDatasetId: source.id,
+            name: "Billing clone",
+            caseIds: ["case-3", "case-1"],
+            idempotencyKey: "clone-1",
+        }
+
+        const resolution = await services.resolveScope(
+            "datasets.clone",
+            input,
+            serviceContext().grant,
+        )
+        assert.deepEqual(resolution.scope, {
+            method: "datasets.clone",
+            mode: "access",
+            subject: {kind: "dataset", id: source.id},
+            skillIds: ["skill-1"],
+            datasetIds: [source.id],
+            repositoryIds: ["repository-1"],
+        })
+        const result = await services["datasets.clone"](
+            input,
+            snapshotContext(resolution, null),
+        )
+
+        assert.deepEqual(context.evaluationStore.cloneDataset.mock.calls[0].arguments[0], {
+            sourceDatasetId: source.id,
+            name: "Billing clone",
+            caseIds: ["case-3", "case-1"],
+        })
+        assert.deepEqual(result, {
+            dataset: {
+                id: "dataset-cloned",
+                name: "Billing clone",
+                skillReference: {
+                    id: "skill-1",
+                    repositoryId: "repository-1",
+                    name: "billing",
+                },
+            },
+            cases: [
+                {
+                    id: "case-cloned-1",
+                    datasetId: "dataset-cloned",
+                    title: "copy of case-3",
+                    inputSummary: "copy of case-3",
+                },
+                {
+                    id: "case-cloned-2",
+                    datasetId: "dataset-cloned",
+                    title: "copy of case-1",
+                    inputSummary: "copy of case-1",
+                },
+            ],
+            rubricCopied: true,
+        })
+        assert.doesNotThrow(() => parseControlOutput("datasets.clone", result))
+
+        await assert.rejects(
+            services.resolveScope("datasets.clone", {
+                ...input,
+                caseIds: ["case-other"],
+            }, serviceContext().grant),
+            (error) => error.code === "NOT_FOUND" && error.details.resource === "case",
         )
     })
 
@@ -978,14 +1098,6 @@ describe("control-plane domain services", () => {
                 skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "."}],
             })),
         }
-        context.dependencies.resolveManagedSkillBinding = mock.fn(() => ({
-            repositoryId: "repository-1",
-            skillId: "skill-1",
-            name: "billing",
-            skillPath: "/private/managed/repository-1",
-            providerId: "codex",
-            runtimeId: "runtime-1",
-        }))
         const services = createDomainServices(context.dependencies)
 
         const created = await services["datasets.create"]({
@@ -996,10 +1108,13 @@ describe("control-plane domain services", () => {
         }, serviceContext())
 
         assert.equal(created.dataset.id, "dataset-created")
-        assert.equal(
-            context.evaluationStore.createDataset.mock.calls[0].arguments[0].skillReference.path,
-            "/private/managed/repository-1",
-        )
+        const reference = context.evaluationStore.createDataset.mock.calls[0].arguments[0]
+            .skillReference
+        assert.equal(reference.path, null)
+        assert.equal(reference.evidencePrecision, "managed")
+        assert.equal(reference.id, "skill-1")
+        assert.equal(reference.repositoryId, "repository-1")
+        assert.equal(context.dependencies.resolveManagedSkillBinding.mock.callCount(), 0)
     })
 
     it("projects installation Jobs without executable, repository path, Trace, or raw transcript", async () => {

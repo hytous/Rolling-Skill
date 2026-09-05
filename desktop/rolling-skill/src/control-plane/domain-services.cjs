@@ -13,6 +13,7 @@ const {createHash} = require("node:crypto")
 const {isAbsolute, relative, resolve, sep} = require("node:path")
 
 const TRUSTED_MUTATION_METHODS = new Set([
+    "datasets.clone",
     "datasets.delete",
     "datasets.delete_case",
     "curation.save",
@@ -821,6 +822,25 @@ function createDomainServices(dependencies = {}) {
             .filter((entry) => entry?.datasetId === datasetId)
     }
 
+    async function activeRubricForDataset(dataset) {
+        if (!dataset?.activeRubricVersionId) return null
+        if (typeof evaluationStore?.getActiveDatasetRubric !== "function") {
+            throw new Error("Dataset Rubric store unavailable")
+        }
+        let rubric
+        try {
+            rubric = await evaluationStore.getActiveDatasetRubric(dataset.id)
+        } catch {
+            throw notFound("version")
+        }
+        if (
+            !rubric ||
+            rubric.id !== dataset.activeRubricVersionId ||
+            rubric.datasetId !== dataset.id
+        ) throw notFound("version")
+        return clone(rubric)
+    }
+
     async function evaluationStartSnapshot(input) {
         const dataset = await requireDataset(input.datasetId)
         const cases = await casesForDataset(input.datasetId)
@@ -1025,6 +1045,26 @@ function createDomainServices(dependencies = {}) {
                 caseIds: cases.map((entry) => entry.id).sort(),
                 runIds: runs.map((entry) => entry.id).sort(),
                 resourceDigest: snapshotDigest({dataset: execution.dataset, cases, runs}),
+            }
+        }
+        if (method === "datasets.clone") {
+            const cases = [...execution.cases].sort((left, right) =>
+                String(left.id).localeCompare(String(right.id)))
+            return {
+                method,
+                sourceDatasetId: input.sourceDatasetId,
+                datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+                caseRevisions: cases.map((entry) => ({
+                    id: entry.id,
+                    revision: entry.revision ?? entry.updatedAt ?? null,
+                })),
+                rubricVersionId: execution.rubric?.id ?? null,
+                resourceDigest: snapshotDigest({
+                    dataset: execution.dataset,
+                    cases,
+                    rubric: execution.rubric,
+                    skill: execution.skill,
+                }),
             }
         }
         if (method === "datasets.delete_case") {
@@ -1287,6 +1327,29 @@ function createDomainServices(dependencies = {}) {
                 skillIds: [skill.id],
                 repositoryIds: [skill.repositoryId],
             }, execution)
+        }
+        if (method === "datasets.clone") {
+            const dataset = await requireDataset(input.sourceDatasetId)
+            const skillId = identifier(dataset.skillReference?.id)
+            const repositoryId = identifier(dataset.skillReference?.repositoryId)
+            if (skillId === null || repositoryId === null) throw notFound("skill")
+            const skill = await requireManagedSkillSelection(skillId, repositoryId)
+            const availableCases = await casesForDataset(dataset.id)
+            const byId = new Map(availableCases.map((entry) => [entry.id, entry]))
+            const cases = input.caseIds.map((caseId) => {
+                const entry = byId.get(caseId)
+                if (!entry) throw notFound("case")
+                return entry
+            })
+            const rubric = await activeRubricForDataset(dataset)
+            return scopeResolution({
+                method,
+                mode: "access",
+                subject: {kind: "dataset", id: dataset.id},
+                skillIds: [skill.id],
+                datasetIds: [dataset.id],
+                repositoryIds: [skill.repositoryId],
+            }, {method, dataset, cases, rubric, skill})
         }
         if (method === "curation.start") {
             return scopeResolution(null, {method, dataset: await requireDataset(input.datasetId)})
@@ -1681,23 +1744,6 @@ function createDomainServices(dependencies = {}) {
             const execution = trustedExecution(context, "datasets.create")
             const skill = execution?.skill ??
                 await requireManagedSkillSelection(input.skillId, input.repositoryId)
-            if (typeof dependencies.resolveManagedSkillBinding !== "function") {
-                throw new Error("Managed Skill binding resolution unavailable")
-            }
-            const binding = await dependencies.resolveManagedSkillBinding(Object.freeze({
-                repositoryId: input.repositoryId,
-                skillId: input.skillId,
-            }))
-            if (
-                !binding ||
-                typeof binding !== "object" ||
-                binding.repositoryId !== input.repositoryId ||
-                binding.skillId !== input.skillId ||
-                binding.name !== skill.name ||
-                !isAbsolute(binding.skillPath) ||
-                identifier(binding.providerId) === null ||
-                identifier(binding.runtimeId) === null
-            ) throw new Error("Managed Skill binding resolution is invalid")
             if (typeof evaluationStore?.createDataset !== "function") {
                 throw new Error("Dataset store unavailable")
             }
@@ -1705,18 +1751,40 @@ function createDomainServices(dependencies = {}) {
                 name: input.name,
                 skillReference: {
                     schemaVersion: "rolling-skill-skill-reference/v1",
+                    evidencePrecision: "managed",
                     id: skill.id,
-                    name: binding.name,
-                    path: binding.skillPath,
-                    scope: null,
+                    repositoryId: skill.repositoryId,
+                    name: skill.name,
+                    path: null,
+                    scope: "managed",
                     description: skill.description ?? null,
-                    providerId: binding.providerId,
-                    runtimeId: binding.runtimeId,
-                    repositoryId: binding.repositoryId,
+                    providerId: null,
+                    runtimeId: null,
                     confirmedAt: new Date().toISOString(),
                 },
             })
             return {dataset: publicDataset(dataset)}
+        },
+
+        async "datasets.clone"(input, context) {
+            const execution = trustedExecution(context, "datasets.clone")
+            if (execution === null) {
+                await resolveScope("datasets.clone", input, context?.grant)
+            }
+            await assertMutationCurrent("datasets.clone", input, context)
+            if (typeof evaluationStore?.cloneDataset !== "function") {
+                throw new Error("Dataset clone store unavailable")
+            }
+            const result = await evaluationStore.cloneDataset({
+                sourceDatasetId: input.sourceDatasetId,
+                name: input.name,
+                caseIds: input.caseIds,
+            })
+            return {
+                dataset: publicDataset(result.dataset),
+                cases: result.cases.map(publicCase),
+                rubricCopied: Boolean(result.rubricVersion),
+            }
         },
 
         async "datasets.delete"(input, context) {

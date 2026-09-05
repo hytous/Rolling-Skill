@@ -128,6 +128,42 @@ describe("control-plane policy", () => {
         })
     })
 
+    it("requires the source Dataset, managed Skill, and repository when cloning", () => {
+        const policy = createControlPolicy()
+        const request = {
+            grant: grant(),
+            method: "datasets.clone",
+            action: "datasets.write",
+            input: {
+                sourceDatasetId: "dataset-1",
+                name: "Billing clone",
+                caseIds: ["case-1"],
+                idempotencyKey: "clone-1",
+            },
+        }
+
+        assert.equal(policy.decide(request).code, "OBJECT_SCOPE_UNRESOLVED")
+        const resolved = resolvedScope("datasets.clone", {
+            subject: {kind: "dataset", id: "dataset-1"},
+            datasetIds: ["dataset-1"],
+            skillIds: ["skill-1"],
+            repositoryIds: ["repository-1"],
+        })
+        assert.deepEqual(policy.decide({...request, resolvedScope: resolved}), {
+            decision: "allow",
+            reservation: null,
+        })
+        assert.equal(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("datasets.clone", {
+                subject: {kind: "dataset", id: "dataset-1"},
+                datasetIds: ["dataset-1"],
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-2"],
+            }),
+        }).code, "OBJECT_OUT_OF_SCOPE")
+    })
+
     it("checks every Runtime target on installation requests", () => {
         const policy = createControlPolicy()
         const decision = policy.decide({

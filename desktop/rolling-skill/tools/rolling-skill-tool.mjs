@@ -428,7 +428,8 @@ function createOperatorMcpServer(credentials = controlCredentials()) {
             controlToolName(method),
             {
                 title: `Rolling Skill ${method}`,
-                description: `Invoke the authenticated Rolling Skill ${method} control method.`,
+                description: definition.description ??
+                    `Invoke the authenticated Rolling Skill ${method} control method.`,
                 inputSchema: definition.input,
                 outputSchema: definition.output,
                 annotations: {

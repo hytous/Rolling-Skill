@@ -44,8 +44,13 @@ const OPERATOR_ARTIFACT_ID_PROJECTIONS = Object.freeze({
     },
     "datasets.create": {
         datasetId: [["result", "dataset", "id"]],
-        repositoryId: [["result", "dataset", "repositoryId"]],
-        skillId: [["result", "dataset", "skillId"]],
+        repositoryId: [["result", "dataset", "skillReference", "repositoryId"]],
+        skillId: [["result", "dataset", "skillReference", "id"]],
+    },
+    "datasets.clone": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "skillReference", "repositoryId"]],
+        skillId: [["result", "dataset", "skillReference", "id"]],
     },
     "datasets.delete": {
         datasetId: [["result", "dataset", "id"], ["facts", "datasetId"]],

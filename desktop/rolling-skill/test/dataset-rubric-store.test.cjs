@@ -110,6 +110,23 @@ function episode() {
     }
 }
 
+function saveCuratedCase(store, dataset, question) {
+    const value = episode()
+    value.originalQuestion = question
+    value.items[0].text = question
+    const session = store.createCurationSession({
+        datasetId: dataset.id,
+        caseType: "goodcase",
+        episode: value,
+        curator: {},
+    })
+    store.recordCurationRevision(session.id, {
+        draft: curatedV2Draft(),
+        assistantText: `curated ${question}`,
+    })
+    return store.archiveCurationSession(session.id)
+}
+
 describe("dataset rubric lifecycle", () => {
     it("migrates storage and initializes dataset-level rubric fields and profile", () => {
         const {store, dataset} = fixture()
@@ -154,6 +171,84 @@ describe("dataset rubric lifecycle", () => {
         assert.deepEqual(versions.map((entry) => entry.id), [second.id, first.id])
         assert.equal(store.getDataset(dataset.id).activeRubricVersionId, second.id)
         assert.equal(store.getDatasetRubricVersion(first.id).rubric.title, "Billing rubric v1")
+    })
+
+    it("atomically clones selected Cases and the active Dataset Rubric", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const rubricSession = startSession(store, dataset, skillEvidence)
+        store.recordRubricRevision(rubricSession.id, {
+            rubric: rubric("source"),
+            assistantText: "source rubric",
+        })
+        const sourceRubric = store.publishRubricSession(rubricSession.id)
+        const first = saveCuratedCase(store, dataset, "first question")
+        const second = saveCuratedCase(store, dataset, "second question")
+        saveCuratedCase(store, dataset, "not selected")
+
+        const result = store.cloneDataset({
+            sourceDatasetId: dataset.id,
+            name: "Billing clone",
+            caseIds: [second.id, first.id],
+        })
+
+        assert.equal(result.dataset.name, "Billing clone")
+        assert.notEqual(result.dataset.id, dataset.id)
+        assert.deepEqual(result.dataset.skillReference, dataset.skillReference)
+        assert.equal(result.cases.length, 2)
+        assert.deepEqual(result.cases.map((entry) => entry.question), [
+            "second question",
+            "first question",
+        ])
+        assert.equal(new Set(result.cases.map((entry) => entry.id)).size, 2)
+        assert.ok(result.cases.every((entry) => entry.datasetId === result.dataset.id))
+        assert.ok(result.cases.every((entry) => entry.curated.referenceAnswer.summary === "返回账单结果。"))
+        assert.ok(result.cases.every((entry) => entry.rubricVersionId === result.rubricVersion.id))
+        assert.ok(result.cases.every((entry) => entry.rubricCalibration.status === "current"))
+        assert.notEqual(result.rubricVersion.id, sourceRubric.id)
+        assert.equal(result.rubricVersion.datasetId, result.dataset.id)
+        assert.equal(result.rubricVersion.version, 1)
+        assert.equal(result.rubricVersion.rubricDigest, sourceRubric.rubricDigest)
+        assert.deepEqual(result.rubricVersion.rubric, sourceRubric.rubric)
+        assert.equal(store.listCases(result.dataset.id).length, 2)
+        assert.equal(store.getActiveDatasetRubric(result.dataset.id).id, result.rubricVersion.id)
+    })
+
+    it("does not persist a partial Dataset clone when the Case selection is invalid", () => {
+        const {store, dataset} = fixture()
+        const selected = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "selected",
+            answer: "answer",
+        })
+        const otherDataset = store.createDataset({
+            name: "Other",
+            skillReference: dataset.skillReference,
+        })
+        const foreign = store.saveCase({
+            datasetId: otherDataset.id,
+            caseType: "goodcase",
+            question: "foreign",
+            answer: "answer",
+        })
+        const before = store.read()
+
+        assert.throws(() => store.cloneDataset({
+            sourceDatasetId: dataset.id,
+            name: "Duplicate selection",
+            caseIds: [selected.id, selected.id],
+        }), /duplicate/i)
+        assert.throws(() => store.cloneDataset({
+            sourceDatasetId: dataset.id,
+            name: "Oversized selection",
+            caseIds: Array.from({length: 101}, (_value, index) => `case-${index}`),
+        }), /100|too many/i)
+        assert.throws(() => store.cloneDataset({
+            sourceDatasetId: dataset.id,
+            name: "Foreign selection",
+            caseIds: [foreign.id],
+        }), /case.*source|unknown.*case/i)
+        assert.deepEqual(store.read(), before)
     })
 
     it("rejects publishing a stale Rubric draft over a newer active version", () => {

@@ -681,6 +681,18 @@ describe("rolling-skill external Raw Case tool", () => {
                 ].includes(tool.name)
             )), false)
 
+            const createDatasetTool = listed.tools.find(
+                (tool) => tool.name === "rolling_skill_datasets_create",
+            )
+            const cloneDatasetTool = listed.tools.find(
+                (tool) => tool.name === "rolling_skill_datasets_clone",
+            )
+            assert.match(createDatasetTool.description, /empty Dataset/iu)
+            assert.match(
+                cloneDatasetTool.description,
+                /Cases.*active Rubric|active Rubric.*Cases/iu,
+            )
+
             const readTool = listed.tools.find((tool) => tool.name === "rolling_skill_raw_cases_list")
             assert.equal(readTool.inputSchema.type, "object")
             assert.equal(readTool.inputSchema.additionalProperties, false)

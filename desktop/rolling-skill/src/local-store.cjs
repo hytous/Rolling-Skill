@@ -1326,6 +1326,99 @@ class LocalEvaluationStore {
         return copy(dataset)
     }
 
+    cloneDataset(input = {}) {
+        const name = String(input?.name ?? "").trim()
+        if (!name) throw new Error("Dataset name is required")
+        const sourceDatasetId = String(input?.sourceDatasetId ?? "").trim()
+        if (!sourceDatasetId) throw new Error("Source Dataset is required")
+        if (!Array.isArray(input.caseIds) || input.caseIds.length === 0) {
+            throw new Error("At least one source Case is required")
+        }
+        if (input.caseIds.length > 100) {
+            throw new Error("Dataset clone cannot include more than 100 source Cases")
+        }
+        const caseIds = input.caseIds.map((value) => String(value ?? "").trim())
+        if (caseIds.some((value) => !value)) throw new Error("Source Case id is required")
+        if (new Set(caseIds).size !== caseIds.length) {
+            throw new Error("Source Case selection contains duplicate ids")
+        }
+
+        const state = this.load()
+        const sourceDataset = requireDataset(state, sourceDatasetId)
+        const sourceCases = caseIds.map((caseId) => {
+            const entry = state.cases.find((candidate) => candidate.id === caseId)
+            if (!entry || entry.datasetId !== sourceDataset.id) {
+                throw new Error("Selected Case does not belong to the source Dataset")
+            }
+            return entry
+        })
+        const sourceRubric = sourceDataset.activeRubricVersionId
+            ? requireDatasetRubricVersion(state, sourceDataset.activeRubricVersionId)
+            : null
+        if (sourceRubric && sourceRubric.datasetId !== sourceDataset.id) {
+            throw new Error("Source Dataset active rubric does not belong to the Dataset")
+        }
+
+        const now = new Date().toISOString()
+        const dataset = {
+            id: randomUUID(),
+            name,
+            skillReference: copy(requireDatasetSkill(sourceDataset)),
+            activeRubricVersionId: null,
+            createdAt: now,
+        }
+        const rubricVersion = sourceRubric
+            ? {
+                ...copy(sourceRubric),
+                id: randomUUID(),
+                datasetId: dataset.id,
+                version: 1,
+                skillReference: copy(dataset.skillReference),
+                sourceSessionId: null,
+                baseVersionId: null,
+                createdAt: now,
+                publishedAt: now,
+            }
+            : null
+        if (rubricVersion) dataset.activeRubricVersionId = rubricVersion.id
+        const cases = sourceCases.map((source) => {
+            const currentRubric = Boolean(
+                rubricVersion &&
+                source.rubricVersionId === sourceRubric.id &&
+                source.rubricCalibration?.status === "current",
+            )
+            return {
+                ...copy(source),
+                id: randomUUID(),
+                datasetId: dataset.id,
+                ...(rubricVersion
+                    ? {
+                        rubricVersionId: currentRubric ? rubricVersion.id : null,
+                        rubricCalibration: currentRubric
+                            ? {
+                                status: "current",
+                                rubricVersionId: rubricVersion.id,
+                                previousRubricVersionId: null,
+                            }
+                            : {
+                                status: "needed",
+                                rubricVersionId: rubricVersion.id,
+                                previousRubricVersionId: null,
+                            },
+                    }
+                    : {rubricVersionId: null, rubricCalibration: null}),
+                createdAt: now,
+                updatedAt: now,
+            }
+        })
+
+        state.datasets.push(dataset)
+        if (rubricVersion) state.datasetRubricVersions.push(rubricVersion)
+        state.cases.push(...cases)
+        this.persist()
+        return copy({dataset, cases, rubricVersion})
+    }
+
     bindDatasetSkill(datasetId, value) {
         const state = this.load()
         const dataset = requireDataset(state, datasetId)

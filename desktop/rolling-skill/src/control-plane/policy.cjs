@@ -28,6 +28,10 @@ const SCOPE_REQUIREMENTS = Object.freeze({
         mode: "access",
         keys: Object.freeze(["skillIds", "repositoryIds"]),
     }),
+    "datasets.clone": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "repositoryIds"]),
+    }),
     "evaluations.get": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "evaluations.cancel": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "skill_repositories.list": Object.freeze({mode: "filter", keys: Object.freeze(["repositoryIds"])}),
@@ -116,6 +120,7 @@ const ACCESS_SCOPE_SUBJECTS = Object.freeze({
     "evaluations.get": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
     "evaluations.cancel": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
     "datasets.create": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "datasets.clone": Object.freeze({kind: "dataset", inputKey: "sourceDatasetId"}),
     "skills.diff": Object.freeze({kind: "skill", inputKey: "skillId"}),
     "skills.create_candidate": Object.freeze({kind: "skill", inputKey: "skillId"}),
     "skills.release": Object.freeze({kind: "skill", inputKey: "skillId"}),

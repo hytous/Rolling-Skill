@@ -846,6 +846,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     },
     "datasets.create": {
         action: "datasets.write",
+        description: "Create an empty Dataset bound to a managed Skill; this does not copy Cases or a Rubric.",
         input: z.object({
             name: boundedText(500, "Dataset name"),
             repositoryId: id,
@@ -853,6 +854,29 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
             idempotencyKey: id,
         }).strict(),
         output: z.object({dataset: publicDataset}).strict(),
+    },
+    "datasets.clone": {
+        action: "datasets.write",
+        description: "Create a Dataset by atomically copying selected Cases and the active Rubric from a scoped source Dataset.",
+        input: z.object({
+            sourceDatasetId: id,
+            name: boundedText(500, "Dataset name"),
+            caseIds: z.array(id).min(1).max(100),
+            idempotencyKey: id,
+        }).strict().superRefine((input, context) => {
+            if (new Set(input.caseIds).size !== input.caseIds.length) {
+                context.addIssue({
+                    code: "custom",
+                    path: ["caseIds"],
+                    message: "Dataset Case ids must be unique",
+                })
+            }
+        }),
+        output: z.object({
+            dataset: publicDataset,
+            cases: z.array(publicDatasetCase).max(100),
+            rubricCopied: z.boolean(),
+        }).strict(),
     },
     "datasets.delete": {
         action: "datasets.delete",

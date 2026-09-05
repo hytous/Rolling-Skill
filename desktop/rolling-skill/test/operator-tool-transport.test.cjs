@@ -70,6 +70,9 @@ describe("Operator Tool transport", () => {
             typeof tool.description === "string" &&
             tool.inputSchema?.type === "object"
         )), true)
+        const byName = new Map(dynamicTools[0].tools.map((tool) => [tool.name, tool]))
+        assert.match(byName.get("datasets_create").description, /empty Dataset/iu)
+        assert.match(byName.get("datasets_clone").description, /Cases.*active Rubric|active Rubric.*Cases/iu)
         assert.equal(JSON.stringify(dynamicTools).includes("operator-secret-token"), false)
     })
 

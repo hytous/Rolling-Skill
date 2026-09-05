@@ -191,12 +191,16 @@ function codexDynamicTools() {
         type: "namespace",
         name: "rolling_skill",
         description: "Scoped Rolling Skill Operator control tools.",
-        tools: OPERATOR_CONTROL_METHODS.map((method) => ({
-            type: "function",
-            name: methodToolName(method),
-            description: `Invoke the scoped Rolling Skill ${method} action.`,
-            inputSchema: z.toJSONSchema(controlDefinition(method).input),
-        })),
+        tools: OPERATOR_CONTROL_METHODS.map((method) => {
+            const definition = controlDefinition(method)
+            return {
+                type: "function",
+                name: methodToolName(method),
+                description: definition.description ??
+                    `Invoke the scoped Rolling Skill ${method} action.`,
+                inputSchema: z.toJSONSchema(definition.input),
+            }
+        }),
     }]
 }
 
