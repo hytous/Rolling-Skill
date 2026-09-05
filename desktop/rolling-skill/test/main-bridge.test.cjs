@@ -942,6 +942,15 @@ describe("desktop main/preload bridge", () => {
             main.indexOf("function initializeOptimizationRuntime"),
             main.indexOf("\nfunction startControlSocket"),
         )
+        assert.match(main, /optimizationRequestMessage/u)
+        assert.match(optimizationInitialization, /optimizationStore\.getRun\(runId\)/u)
+        assert.match(optimizationInitialization, /getEvaluationRun\(id\)/u)
+        assert.match(optimizationInitialization, /baselineEvaluation/u)
+        assert.match(optimizationInitialization, /currentEvaluation/u)
+        assert.doesNotMatch(
+            optimizationInitialization,
+            /Edit only the bound experiment worktree|Review the deterministic analysis/u,
+        )
         assert.match(optimizationInitialization, /getArtifact\(artifactId\)/u)
         assert.match(optimizationInitialization, /artifact\.byteLength\s*>\s*maximumBytes/u)
         assert.ok(

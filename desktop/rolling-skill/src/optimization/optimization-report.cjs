@@ -1,7 +1,11 @@
 "use strict"
 
 const {createHash} = require("node:crypto")
-const {FROZEN_OPTIMIZATION_RUN_SCHEMA} = require("./optimization-contract.cjs")
+const {
+    COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA,
+    FROZEN_OPTIMIZATION_RUN_SCHEMA,
+} = require("./optimization-contract.cjs")
+const {optimizationDirectionText} = require("./optimization-agent-context.cjs")
 
 function sha256(value) {
     return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`
@@ -128,7 +132,8 @@ function generateOptimizationReport({run, readArtifact: read}) {
     }
     if (typeof read !== "function") throw new Error("Optimization artifact reader is required")
     const snapshot = run.snapshot ?? {}
-    const compact = snapshot.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
+    const v3 = snapshot.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
+    const compact = v3 || snapshot.schemaVersion === COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA
     const baseline = snapshot.baseline ?? {}
     const checkpoint = run.checkpoint ?? {}
     const tokens = checkpoint.telemetry?.tokens
@@ -152,6 +157,11 @@ function generateOptimizationReport({run, readArtifact: read}) {
         `- 基线内容摘要：${display(baseline.contentDigest)}`,
         `- Dataset：${display(snapshot.dataset?.id)} @ revision ${display(snapshot.dataset?.revision)}（${display(snapshot.dataset?.digest)}）`,
         `- Rubric：${display(snapshot.rubric?.id)} @ version ${display(snapshot.rubric?.version)}（${display(snapshot.rubric?.digest)}）`,
+        ...(v3 ? [
+            `- 优化方向：${optimizationDirectionText(snapshot.optimizationDirection)}`,
+            `- 优化方法：Rolling Skill Optimization Playbook v${display(snapshot.playbook?.version)}（${display(snapshot.playbook?.digest)}）`,
+            "- 方法摘要：从用户视角理解完整 Skill；建立证据矩阵；形成可泛化修改；自检候选版本；根据完整回归决定下一步",
+        ] : []),
         "",
         "## 验证 Runtime",
         "",

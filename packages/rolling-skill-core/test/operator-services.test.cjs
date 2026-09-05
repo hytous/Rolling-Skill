@@ -9,6 +9,10 @@ const {
     optimizationReleasedSkillBinding,
     optimizationApprovalRequest,
 } = require("../src/operator-services.cjs")
+const coreOptimizationContext = require("../src/optimization-agent-context.cjs")
+const desktopOptimizationContext = require(
+    "../../../desktop/rolling-skill/src/optimization/optimization-agent-context.cjs",
+)
 
 function fixture(options = {}) {
     const calls = []
@@ -109,6 +113,17 @@ function fixture(options = {}) {
 }
 
 describe("Rolling Skill Operator services", () => {
+    it("uses the packaged Desktop optimization objective and phase-message implementation", () => {
+        assert.equal(
+            coreOptimizationContext.optimizationRequestMessage,
+            desktopOptimizationContext.optimizationRequestMessage,
+        )
+        assert.equal(
+            coreOptimizationContext.optimizationTaskObjective,
+            desktopOptimizationContext.optimizationTaskObjective,
+        )
+    })
+
     it("binds the final approval audit to the exact immutable Candidate on every host", () => {
         assert.deepEqual(optimizationApprovalRequest({
             kind: "release-install",

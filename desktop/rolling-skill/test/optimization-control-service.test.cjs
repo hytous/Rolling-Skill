@@ -272,6 +272,17 @@ describe("Optimization control service", () => {
         assert.deepEqual(started.run.playbook, preflight.playbook)
         assert.equal(Object.hasOwn(started.run.playbook, "content"), false)
         assert.equal(Object.hasOwn(started.run.playbook, "sources"), false)
+
+        const originalObjective = context.operatorCalls.at(-1).objective
+        assert.match(originalObjective, /Rolling Skill Optimization Playbook v1/u)
+        assert.match(originalObjective, /重点改善异常下钻/u)
+        assert.match(originalObjective, /从用户视角理解完整 Skill/u)
+
+        context.setRunState("needs_recovery", {paused: true})
+        await context.service.recoverStartup()
+        context.runner.resume = () => new Promise(() => {})
+        await context.service.resume("optimization-run-1")
+        assert.equal(context.operatorCalls.at(-1).objective, originalObjective)
     })
 
     it("freezes at start, creates the experiment workspace and launches a scoped Operator Runner", async () => {

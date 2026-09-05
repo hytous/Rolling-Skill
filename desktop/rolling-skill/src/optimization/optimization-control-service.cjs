@@ -6,6 +6,7 @@ const {
     parseOptimizationConfig,
 } = require("./optimization-contract.cjs")
 const {currentOptimizationPlaybook} = require("./optimization-playbook.cjs")
+const {optimizationTaskObjective} = require("./optimization-agent-context.cjs")
 const {generateOptimizationReport, persistOptimizationReport} = require("./optimization-report.cjs")
 
 const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
@@ -387,6 +388,7 @@ class OptimizationControlService {
     async #createOperator(run, resuming = false) {
         const snapshot = run.snapshot
         const legacy = snapshot.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
+        const v3 = snapshot.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
         if (resuming && run.checkpoint.operatorSessionId && this.operatorSessionManager.stop) {
             await this.operatorSessionManager.stop(run.checkpoint.operatorSessionId)
         }
@@ -400,7 +402,7 @@ class OptimizationControlService {
             modelId: snapshot.operator.modelId,
             effort: snapshot.operator.effort,
             title: optimizationTaskTitle(run),
-            objective: [
+            objective: v3 ? optimizationTaskObjective(run) : [
                 `Optimize frozen Run ${run.id}.`,
                 "Wait for an optimization Candidate or decision request, then use only the matching optimization.submit_* Tool.",
                 "Edit only the provided optimization worktree and do not change Dataset or Rubric inputs.",

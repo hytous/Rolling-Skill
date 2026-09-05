@@ -7,6 +7,9 @@ const {
     generateOptimizationReport,
     persistOptimizationReport,
 } = require("../src/optimization/optimization-report.cjs")
+const {currentOptimizationPlaybook} = require(
+    "../src/optimization/optimization-playbook.cjs",
+)
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -108,6 +111,31 @@ function reportFixture() {
 }
 
 describe("Optimization Markdown report", () => {
+    it("records the frozen v3 optimization direction and Playbook identity", () => {
+        const {run, artifacts} = reportFixture()
+        run.snapshot = {
+            ...run.snapshot,
+            schemaVersion: "rolling-skill-frozen-optimization-run/v3",
+            optimizationDirection: "重点改善异常下钻",
+            playbook: currentOptimizationPlaybook(),
+        }
+
+        const {markdown} = generateOptimizationReport({
+            run,
+            readArtifact: (id) => artifacts[id] ?? null,
+        })
+        assert.match(markdown, /优化方向：重点改善异常下钻/u)
+        assert.match(markdown, /优化方法：Rolling Skill Optimization Playbook v1/u)
+        assert.match(markdown, new RegExp(currentOptimizationPlaybook().digest, "u"))
+        assert.match(markdown, /方法摘要：从用户视角理解完整 Skill/u)
+
+        run.snapshot.optimizationDirection = null
+        assert.match(generateOptimizationReport({
+            run,
+            readArtifact: (id) => artifacts[id] ?? null,
+        }).markdown, /优化方向：系统全面优化/u)
+    })
+
     it("distinguishes a rejected final approval from one that was never requested", () => {
         const {run, artifacts} = reportFixture()
         run.state = "cancelled"
@@ -172,6 +200,7 @@ describe("Optimization Markdown report", () => {
             "Agent 判断理由",
         ]) assert.match(first.markdown, new RegExp(text, "u"))
         assert.doesNotMatch(first.markdown, /最终回归/u)
+        assert.doesNotMatch(first.markdown, /Rolling Skill Optimization Playbook/u)
         assert.doesNotMatch(first.markdown, /Agent 结论|Agent 分数/u)
         assert.doesNotMatch(
             first.markdown,

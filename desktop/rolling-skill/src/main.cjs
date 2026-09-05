@@ -107,6 +107,9 @@ const {
 const {
     assertOptimizationTelemetrySupport,
 } = require("./optimization/optimization-preflight.cjs")
+const {
+    optimizationRequestMessage,
+} = require("./optimization/optimization-agent-context.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
@@ -2581,8 +2584,8 @@ function optimizationTelemetry({runId}) {
     return {
         elapsedMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
         turnsUsed: usage.runtimeTurns,
-        tokensUsed: run.snapshot.telemetry.tokens ? usage.tokens : null,
-        costMicros: run.snapshot.telemetry.cost
+        tokensUsed: run.snapshot.telemetry?.tokens === true ? usage.tokens : null,
+        costMicros: run.snapshot.telemetry?.cost === true
             ? Math.round(usage.reportedCost * 1_000_000)
             : null,
     }
@@ -2598,14 +2601,17 @@ function initializeOptimizationRuntime() {
         store: managedSkillStore,
     })
     optimizationOperatorGateway = new OptimizationOperatorGateway({
-        onRequest: ({runId, kind, epoch, operatorSessionId}) => (
-            operatorSessionManager.sendMessage(operatorSessionId, [
-                `Optimization Run ${runId} is waiting for the Epoch ${epoch} ${kind} submission.`,
-                kind === "candidate"
-                    ? "Edit only the bound experiment worktree, then call optimization.submit_candidate."
-                    : "Review the deterministic analysis, then call optimization.submit_decision.",
-            ].join(" "))
-        ),
+        onRequest: ({runId, kind, epoch, operatorSessionId}) => {
+            const run = optimizationStore.getRun(runId)
+            const evaluation = (id) => id ? store.getEvaluationRun(id) : null
+            return operatorSessionManager.sendMessage(operatorSessionId, optimizationRequestMessage({
+                run,
+                kind,
+                epoch,
+                baselineEvaluation: evaluation(run.checkpoint.baselineEvaluationRunId),
+                currentEvaluation: evaluation(run.checkpoint.activeEvaluationRunId),
+            }))
+        },
     })
     optimizationRunner = new OptimizationRunner({
         store: optimizationStore,

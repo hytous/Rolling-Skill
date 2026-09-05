@@ -775,8 +775,8 @@ function createOperatorRuntime({
             return {
                 elapsedMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
                 turnsUsed: 0,
-                tokensUsed: run.snapshot.telemetry.tokens ? 0 : null,
-                costMicros: run.snapshot.telemetry.cost ? 0 : null,
+                tokensUsed: run.snapshot.telemetry?.tokens === true ? 0 : null,
+                costMicros: run.snapshot.telemetry?.cost === true ? 0 : null,
             }
         },
         onChanged: optimizationChanged,

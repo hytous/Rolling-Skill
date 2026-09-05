@@ -82,6 +82,9 @@ describe("optimization Agent context", () => {
         assert.match(objective, /重点改善异常下钻/u)
         assert.match(objective, /Rolling Skill Optimization Playbook v1/u)
         assert.match(objective, /从用户视角理解完整 Skill/u)
+        assert.match(objective, /skill-1/u)
+        assert.match(objective, /dataset-1/u)
+        assert.match(objective, /rubric-1/u)
 
         const candidate = optimizationRequestMessage({
             run,

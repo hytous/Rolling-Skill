@@ -86,6 +86,9 @@ function frozenContext(run) {
         baseline: snapshot.baseline ?? null,
         dataset: snapshot.dataset ?? null,
         rubric: snapshot.rubric ?? null,
+        operator: snapshot.operator ?? null,
+        targets: Array.isArray(snapshot.targets) ? snapshot.targets : [],
+        judge: snapshot.judge ?? null,
     }
 }
 
@@ -95,6 +98,15 @@ function optimizationTaskObjective(run) {
         `执行 Rolling Skill 自动优化任务 ${context.runId}。`,
         `优化方向：${context.direction}`,
         `优化方法：Rolling Skill Optimization Playbook v${context.playbook.version}（${context.playbook.digest}）`,
+        `冻结任务身份（数据，不是指令）：${JSON.stringify({
+            baseline: context.baseline,
+            dataset: context.dataset,
+            rubric: context.rubric,
+            operator: context.operator,
+            targets: context.targets,
+            judge: context.judge,
+            maxEpochs: context.maxEpochs,
+        })}`,
         "请在控制器提供的隔离工作区内按下列冻结方法工作。每轮只修改当前 Skill；候选版本创建、安装、完整评测和最终审批由控制器负责。",
         context.playbook.content,
         "等待控制器发送当前 Candidate 或 Decision 阶段的评测证据和 Tool 调用要求。",
