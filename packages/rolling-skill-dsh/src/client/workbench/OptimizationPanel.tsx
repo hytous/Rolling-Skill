@@ -34,6 +34,8 @@ interface OptimizationEpoch {
 }
 interface OptimizationDetail extends OptimizationRun {
     snapshotDigest?: string
+    optimizationDirection?: string | null
+    playbook?: {id: string; version: number; digest: string}
     baseline?: unknown
     dataset?: unknown
     rubric?: unknown
@@ -68,9 +70,8 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
     const [targets, setTargets] = useState<OptimizationProfile[]>([{runtimeId: "", modelId: "", effort: ""}])
     const [judge, setJudge] = useState<OptimizationProfile>({runtimeId: "", modelId: "", effort: ""})
     const [tuning, setTuning] = useState<OptimizationTuning>(initialOptimizationTuning)
+    const [optimizationDirection, setOptimizationDirection] = useState("")
     const initialized = useRef(false)
-    const [preflightConfiguration, setPreflightConfiguration] = useState<string | null>(null)
-    const [preflightResult, setPreflightResult] = useState<unknown>(null)
     const [runDetail, setRunDetail] = useState<OptimizationDetail | null>(null)
     const [report, setReport] = useState<(OptimizationReport & {runId: string}) | null>(null)
     const [busy, setBusy] = useState(false)
@@ -150,16 +151,9 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
         targets: targets.map((target) => ({...target, effort: target.effort || null})),
         judge: {...judge, effort: judge.effort || null},
         activationMode: tuning.activationMode,
-        mode: tuning.mode,
+        optimizationDirection: optimizationDirection.trim() || null,
         ...optimizationNumericLimits(tuning),
-        telemetry: {tokens: false, cost: false},
     })
-    const configurationKey = JSON.stringify({skillId, versionId, datasetId, operator, targets, judge, tuning})
-    const preflightReady = preflightConfiguration === configurationKey
-    useEffect(() => {
-        setPreflightConfiguration(null)
-        setPreflightResult(null)
-    }, [configurationKey])
     const mutate = async (operation: () => Promise<unknown>) => {
         setBusy(true)
         setError(null)
@@ -172,19 +166,13 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
             setBusy(false)
         }
     }
-    const preflight = () => mutate(async () => {
-        const input = configuration()
-        setPreflightResult(await requestRollingSkill("optimizations.preflight", input))
-        setPreflightConfiguration(configurationKey)
-    })
     const start = () => mutate(async () => {
         const result = await requestRollingSkill<{run: OptimizationDetail}>("optimizations.start", {
             ...configuration(),
             idempotencyKey: `dsh-${Date.now()}`,
         })
         setRunDetail(result.run)
-        setPreflightConfiguration(null)
-        setPreflightResult(null)
+        setOptimizationDirection("")
     })
     const inspect = async (runId: string) => {
         setError(null)
@@ -292,6 +280,7 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
                 <label className="rolling-skill-field"><span>{t("optimizationBaseline")}</span><select className="rolling-skill-select" value={versionId} onChange={(event) => setVersionId(event.target.value)}>{released.map((version) => <option key={version.id} value={version.id}>{version.versionLabel || version.id}</option>)}</select></label>
             </div>
             <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>{compatibleDatasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></label>
+            <label className="rolling-skill-field rolling-skill-optimization-direction"><span>{t("optimizationDirection")}</span><textarea className="rolling-skill-textarea" maxLength={8_000} value={optimizationDirection} placeholder={t("optimizationDirectionPlaceholder")} onChange={(event) => setOptimizationDirection(event.target.value)}/><small className="rolling-skill-help">{t("optimizationDirectionHelp")}</small></label>
             <div className="rolling-skill-data-stack rolling-skill-section-gap">
                 <OptimizationRuntimeFields label={t("operatorRuntime")} profile={operator} onChange={setOperator} runtimes={runtimes} t={t}/>
                 <OptimizationTargets targets={targets} onChange={setTargets} runtimes={runtimes} t={t}/>
@@ -301,8 +290,7 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
             {!validLimits ? <p role="alert">{t("optimizationInvalidLimits")}</p> : null}
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
             {pollError ? <p className="rolling-skill-inline-error" role="alert">{pollError}</p> : null}
-            <div className="rolling-skill-actions"><Button disabled={busy || !ready} onClick={() => void preflight()}>{t("optimizationPreflight")}</Button><Button disabled={busy || !preflightReady} onClick={() => void start()}>{t("startOptimization")}</Button></div>
-            {preflightReady && preflightResult ? <section className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("optimizationPreflightResult")}</h4><p role="status">{t("optimizationPreflightReady")}</p><p>{detail?.skill.name} · {compatibleDatasets.find((dataset) => dataset.id === datasetId)?.name} · {released.find((version) => version.id === versionId)?.versionLabel}</p><details><summary>{t("runtimeInformation")}</summary><pre>{JSON.stringify(preflightResult, null, 2)}</pre></details></section> : null}
+            <div className="rolling-skill-actions"><Button disabled={busy || !ready} onClick={() => void start()}>{t("startOptimization")}</Button></div>
             <div className="rolling-skill-list rolling-skill-section-gap">
                 {runs.map((run) => <article className="rolling-skill-list-row" key={run.id} title={run.id}><div><strong>{displayStatus(run.state, t)}</strong><span>{catalog.skills.find((item) => item.id === run.skillId)?.name ?? t("optimizationTitle")} · {datasets.find((item) => item.id === run.datasetId)?.name ?? ""}</span><small>{displayDateTime(run.createdAt, t("notAvailable"))} · {t("optimizationRound")} {run.currentEpoch ?? 0}</small>{run.error?.message ? <small>{run.error.message}</small> : null}</div><div className="rolling-skill-actions"><Button size="sm" onClick={() => void inspect(run.id)}>{t("details")}</Button>{!["paused", "needs_recovery", "waiting_approval"].includes(run.state) && !TERMINAL_RUN_STATES.has(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.pause", {runId: run.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.resume", {runId: run.id}))}>{t("resume")}</Button> : null}{run.state !== "waiting_approval" && !TERMINAL_RUN_STATES.has(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.cancel", {runId: run.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}
                 {runs.length === 0 ? <p>{t("emptyOptimizations")}</p> : null}
@@ -313,6 +301,11 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
                     {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
                     {runDetail.error?.message ? <p className="rolling-skill-inline-error" role="alert">{runDetail.error.message}</p> : null}
                     {pollError ? <p className="rolling-skill-inline-error" role="alert">{pollError}</p> : null}
+                    {runDetail.playbook ? <section className="rolling-skill-subpanel">
+                        <h4>{t("optimizationFrozenConfiguration")}</h4>
+                        <p>{t("optimizationDirection")}: {runDetail.optimizationDirection || t("optimizationSystemDirection")}</p>
+                        <p>{t("optimizationMethod")}: {`Rolling Skill Optimization Playbook v${runDetail.playbook.version} · ${runDetail.playbook.digest.slice(0, 19)}…`}</p>
+                    </section> : null}
                     {finalApproval ? <section className="rolling-skill-subpanel">
                         <h4>{t("optimizationFinalApproval")}</h4>
                         <p>{t("optimizationCandidateReady")}: {finalApprovalEpoch?.candidate?.versionId ?? t("notAvailable")}</p>
@@ -324,7 +317,7 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
                     {runDetail.checkpoint?.operatorSessionId && onNavigate ? <Button onClick={() => onNavigate({page: "operator", sessionId: runDetail.checkpoint!.operatorSessionId!})}>{t("optimizationOpenAgent")}</Button> : null}
                     {runDetail.checkpoint?.activeEvaluationRunId && onNavigate ? <Button onClick={() => onNavigate({page: "evaluations", runId: runDetail.checkpoint!.activeEvaluationRunId!})}>{t("optimizationOpenEvaluation")}</Button> : null}
                     {onNavigate ? (runDetail.checkpoint?.installationJobIds ?? []).map((jobId, index) => <Button key={jobId} onClick={() => onNavigate({page: "skill-install", jobId})}>{t("optimizationOpenInstallation")} {index + 1}</Button>) : null}
-                    <details><summary>{t("runtimeInformation")}</summary><pre>{JSON.stringify({snapshotDigest: runDetail.snapshotDigest, baseline: runDetail.baseline, dataset: runDetail.dataset, rubric: runDetail.rubric, operator: runDetail.operator, targets: runDetail.targets, judge: runDetail.judge, checkpoint: runDetail.checkpoint, error: runDetail.error}, null, 2)}</pre></details>
+                    <details><summary>{t("runtimeInformation")}</summary><pre>{JSON.stringify({snapshotDigest: runDetail.snapshotDigest, optimizationDirection: runDetail.optimizationDirection, playbook: runDetail.playbook, baseline: runDetail.baseline, dataset: runDetail.dataset, rubric: runDetail.rubric, operator: runDetail.operator, targets: runDetail.targets, judge: runDetail.judge, checkpoint: runDetail.checkpoint, error: runDetail.error}, null, 2)}</pre></details>
                     <section className="rolling-skill-subpanel"><h4>{t("optimizationTimeline")}</h4><div className="rolling-skill-list">{(runDetail.epochs ?? []).map((epoch) => <OptimizationEpochCard key={epoch.number} epoch={epoch} statusLabel={epoch.number === runDetail.currentEpoch ? optimizationPhaseLabel(runDetail, t) : undefined} t={t}/>)}{!runDetail.epochs?.length ? <p>{t("emptyOptimizationTimeline")}</p> : null}</div></section>
                     {report?.runId === runDetail.id ? <section className="rolling-skill-subpanel"><h4>{t("optimizationReport")}</h4><MarkdownContent>{report.preview ?? t("notAvailable")}</MarkdownContent></section> : null}
                 </div> : null}

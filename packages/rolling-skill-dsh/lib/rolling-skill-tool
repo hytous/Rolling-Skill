@@ -18022,7 +18022,24 @@ var require_contracts = __commonJS({
         context.addIssue({ code: "custom", path: ["targets"], message: "Runtime ids must be unique" });
       }
     });
+    var optimizationConfigV3Input = z2.object({
+      skillId: id,
+      baselineVersionId: id,
+      datasetId: id,
+      operator: optimizationRuntime,
+      targets: z2.array(optimizationRuntime).min(1).max(64),
+      judge: optimizationRuntime,
+      activationMode: z2.enum(["automatic", "explicit"]),
+      limits: compactOptimizationLimits,
+      optimizationDirection: z2.string().max(8e3).nullable()
+    }).strict().superRefine((input, context) => {
+      const runtimeIds = input.targets.map((target) => target.runtimeId);
+      if (new Set(runtimeIds).size !== runtimeIds.length) {
+        context.addIssue({ code: "custom", path: ["targets"], message: "Runtime ids must be unique" });
+      }
+    });
     var optimizationConfigWithIdempotencyInput = z2.union([
+      optimizationConfigV3Input.extend({ idempotencyKey: id }).strict(),
       compactOptimizationConfigInput.extend({ idempotencyKey: id }).strict(),
       legacyOptimizationConfigInput.extend({ idempotencyKey: id }).strict()
     ]);
@@ -18052,6 +18069,11 @@ var require_contracts = __commonJS({
       id,
       version: z2.number().int().min(1),
       digest: boundedText(80, "Optimization Rubric digest").optional()
+    }).strict();
+    var publicOptimizationPlaybook = z2.object({
+      id: boundedText(200, "Optimization Playbook id"),
+      version: z2.number().int().positive(),
+      digest: boundedText(80, "Optimization Playbook digest")
     }).strict();
     var publicOptimizationCandidate = z2.object({
       versionId: id,
@@ -18159,6 +18181,11 @@ var require_contracts = __commonJS({
     }).strict();
     var publicOptimizationRun = z2.union([
       publicOptimizationRunBase.extend({
+        limits: compactOptimizationLimits,
+        optimizationDirection: z2.string().max(8e3).nullable(),
+        playbook: publicOptimizationPlaybook
+      }).strict(),
+      publicOptimizationRunBase.extend({
         limits: compactOptimizationLimits
       }).strict(),
       publicOptimizationRunBase.extend({
@@ -18169,14 +18196,21 @@ var require_contracts = __commonJS({
         checkpoint: legacyPublicOptimizationCheckpoint
       }).strict()
     ]);
-    var publicOptimizationPreflight = z2.object({
+    var publicOptimizationPreflightBase = z2.object({
       snapshotDigest: boundedText(80, "Optimization snapshot digest"),
       baseline: publicOptimizationBaseline,
       dataset: publicOptimizationDataset,
       rubric: publicOptimizationRubric,
       targets: z2.array(optimizationRuntime).min(1).max(64),
       ready: z2.boolean()
-    }).strict();
+    });
+    var publicOptimizationPreflight = z2.union([
+      publicOptimizationPreflightBase.extend({
+        optimizationDirection: z2.string().max(8e3).nullable(),
+        playbook: publicOptimizationPlaybook
+      }).strict(),
+      publicOptimizationPreflightBase.strict()
+    ]);
     var OPERATOR_UI_ONLY_METHODS = /* @__PURE__ */ new Set([
       "approvals.resolve",
       "jobs.pause",

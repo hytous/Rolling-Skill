@@ -468,6 +468,26 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(`${operator}\n${optimization}`, /capabilityId|socketPath|childEnvironment|executablePath\s*:/u)
     })
 
+    it("starts v3 optimization directly with an optional direction and only an Epoch limit", () => {
+        const optimization = source("workbench/OptimizationPanel.tsx")
+        const setup = source("workbench/OptimizationSetupFields.tsx")
+        const locale = source("locale.ts")
+        const combined = `${optimization}\n${setup}`
+
+        assert.match(setup, /export interface OptimizationTuning\s*\{\s*activationMode:\s*"automatic"\s*\|\s*"explicit"\s*maxEpochs:\s*string\s*\}/u)
+        assert.match(setup, /return\s*\{\s*limits:\s*\{maxEpochs\}\s*\}/u)
+        assert.match(optimization, /const \[optimizationDirection, setOptimizationDirection\] = useState\(""\)/u)
+        assert.match(optimization, /optimizationDirection:\s*optimizationDirection\.trim\(\)\s*\|\|\s*null/u)
+        assert.match(optimization, /maxLength=\{8_000\}/u)
+        assert.match(optimization, /runDetail\.optimizationDirection\s*\|\|\s*t\("optimizationSystemDirection"\)/u)
+        assert.match(optimization, /Rolling Skill Optimization Playbook v\$\{runDetail\.playbook\.version\}/u)
+        assert.match(locale, /optimizationDirection:\s*"优化方向（可选）"/u)
+        assert.match(locale, /optimizationDirectionPlaceholder:\s*"例如：重点改善权限查询、异常下钻和失败后的恢复体验。留空时由系统全面优化。"/u)
+        assert.match(locale, /optimizationDirectionHelp:\s*"留空时，系统根据基线评测和用户使用体验自主寻找改进点；填写后优先处理该方向。"/u)
+        assert.doesNotMatch(combined, /\b(?:mode|maxMinutes|patience|minimumImprovement|maxTurns|minimumScore|minimumPassRate|requireCriticalCases)\b/u)
+        assert.doesNotMatch(optimization, /optimizations\.preflight|optimizationPreflight/u)
+    })
+
     it("ships the complete automatic capture settings and status panel", () => {
         const automatic = source("workbench/AutomaticCapturePanel.tsx")
         const modelEffort = source("workbench/ModelEffortSelect.tsx")
