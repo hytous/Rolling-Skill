@@ -76,6 +76,10 @@ Add or update a test where the target Dataset changes during analysis but both o
 
 Run the same three test files and require exit code 0.
 
+- [x] **Step 7: Recover one malformed Boundary response**
+
+When a completed model call returns a Boundary result with invalid or unknown Item IDs, retry once with the fixed parser error and exact allowed IDs. Do not retry Runtime transport failures or loop indefinitely.
+
 ### Task 3: Regression, packaging, and delivery
 
 **Files:**

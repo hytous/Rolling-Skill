@@ -44,6 +44,7 @@ Automatic Capture 已要求用户选择受管 Skill 与目标 Dataset，但扫�
 5. Outcome 只接收候选 Skill 的名称、路径、领域描述和 Dataset 绑定；其结果必须精确命中候选名称，并确认原始问题本身需要该 Skill，而不是 Rolling Skill 管理界面或通用词重合。歧义继续失败关闭。
 6. 保存 Raw Case 前读取最新 profile 和 Dataset。模式已关闭、targets 为空或候选 Skill 不再被任何 target 接受时，返回 `stale_target_scope`，不写证据、不写 Raw Case、不启动 Curator。
 7. 候选仍有效时按现有顺序写证据、写 Raw Case并启动 Curation。
+8. Boundary Agent 若第一次返回未知或抄错的 Item ID，程序携带固定解析错误和精确允许 ID 列表自动重试一次；Runtime 调用本身失败不伪装成格式错误，第二次仍非法时继续失败关闭，避免无限重试。
 
 ## 错误与兼容
 
@@ -61,5 +62,6 @@ Automatic Capture 已要求用户选择受管 Skill 与目标 Dataset，但扫�
 - 新增同一 Skill 切换兼容 Dataset 后仍可沉淀的测试。
 - 新增 Runtime 安装副本通过中央安装记录恢复受管 Skill ID 的测试。
 - 断言 Outcome 提示明确禁止选择列表之外的 Skill，携带受限 Skill 描述，并要求对原始问题执行领域反事实检查。
+- 新增 Boundary 首次返回未知 Item ID 时只纠错重试一次并继续沉淀的测试。
 - 运行 Desktop 全量测试、Renderer smoke、DSH/Core 全量测试与构建。
 - 打包、签名、重新安装 App，并用实际设置执行一次自动扫描检查。

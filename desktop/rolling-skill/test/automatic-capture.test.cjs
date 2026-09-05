@@ -924,6 +924,51 @@ describe("scheduled conversation discovery manager", () => {
         assert.deepEqual(rejected.candidates, [])
     })
 
+    it("retries one malformed boundary result with the exact allowed Item ids", async () => {
+        let boundaryCalls = 0
+        const prompts = []
+        const value = fixture({
+            runAnalysis: async (input) => {
+                prompts.push(input.prompt)
+                if (input.stage === "boundary") {
+                    boundaryCalls += 1
+                    if (boundaryCalls === 1) {
+                        return JSON.stringify({
+                            segments: [],
+                            pendingStartUserItemId: "thread-1-user-typo",
+                        })
+                    }
+                    return JSON.stringify({
+                        segments: [{
+                            startUserItemId: "thread-1-user-1",
+                            endUserItemId: "thread-1-user-2",
+                            summary: "Billing question",
+                        }],
+                        pendingStartUserItemId: null,
+                    })
+                }
+                return JSON.stringify({
+                    eligibleForCase: true,
+                    sourceKind: "human_task",
+                    skillName: "billing-cost-management",
+                    outcome: "resolved",
+                    caseType: "goodcase",
+                    finalAssistantItemId: "thread-1-agent-2",
+                    confidence: 0.92,
+                    reason: "The completed response contains the requested breakdown.",
+                })
+            },
+        })
+
+        await value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+
+        assert.equal(boundaryCalls, 2)
+        assert.match(prompts[1], /previous boundary result was rejected/i)
+        assert.match(prompts[1], /thread-1-user-1/u)
+        assert.match(prompts[1], /thread-1-user-2/u)
+        assert.equal(value.candidates.length, 1)
+    })
+
     it("rescans a persisted pending tail even when no newer user message exists", async () => {
         const value = fixture()
         value.stateStore.commitThread("codex:/opt/codex-a", "thread-1", {

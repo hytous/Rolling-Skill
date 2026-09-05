@@ -803,6 +803,23 @@ class ConversationDiscoveryManager {
         }
     }
 
+    async analyzeBoundary({threadId, batch, profile}) {
+        const prompt = buildBoundaryPrompt({threadId, userMessages: batch})
+        const context = {userMessageIds: batch.map((message) => message.id)}
+        const first = await this.analyze("boundary", prompt, profile)
+        try {
+            return parseBoundaryResult(first, context)
+        } catch (error) {
+            const reason = String(error?.message ?? "invalid boundary result").slice(0, 500)
+            const retryPrompt = `${prompt}
+The previous boundary result was rejected: ${reason}. Return corrected JSON only. Copy every Item id exactly from this allowed list: ${JSON.stringify(context.userMessageIds)}`
+            return parseBoundaryResult(
+                await this.analyze("boundary", retryPrompt, profile),
+                context,
+            )
+        }
+    }
+
     async scanThread({runtime, runtimeId, threadId, skills, datasets, profile}) {
         const response = await runtime.readThread(threadId)
         const thread = response?.thread
@@ -851,12 +868,8 @@ class ConversationDiscoveryManager {
             maxMessages: 40,
             maxCharacters: 24_000,
         })) {
-            const boundaryPrompt = buildBoundaryPrompt({threadId, userMessages: batch})
             const boundary = deferIncompleteSegments(closeAnsweredPendingTail(
-                parseBoundaryResult(
-                    await this.analyze("boundary", boundaryPrompt, profile),
-                    {userMessageIds: batch.map((message) => message.id)},
-                ),
+                await this.analyzeBoundary({threadId, batch, profile}),
                 batch,
             ), batch)
             for (const segment of boundary.segments) {
