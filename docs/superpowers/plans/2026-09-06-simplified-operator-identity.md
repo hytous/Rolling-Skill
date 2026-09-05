@@ -79,8 +79,8 @@
 - Modify: `docs/superpowers/plans/2026-09-06-simplified-operator-identity.md`
 - Modify: project-record repository outside this product repository.
 
-- [ ] Update all plan checkboxes and append final verification to requirement `20260906-0301-simplify-operator-identity` without reading its history log.
-- [ ] Stage only the intended source, tests, docs, and tracked generated outputs; assert that no `.tgz` file is staged.
-- [ ] Commit and push `main` to `rolling-skill`.
-- [ ] Synchronize the identical source tree to `git@github.com:hytous/Rolling-Skill.git` without force-pushing.
-- [ ] Commit and push the final project record.
+- [x] Update all plan checkboxes and append final verification to requirement `20260906-0301-simplify-operator-identity` without reading its history log.
+- [x] Stage only the intended source, tests, docs, and tracked generated outputs; assert that no `.tgz` file is staged.
+- [x] Commit and push `main` to `rolling-skill`.
+- [x] Synchronize the identical source tree to `git@github.com:hytous/Rolling-Skill.git` without force-pushing.
+- [x] Commit and push the final project record.
