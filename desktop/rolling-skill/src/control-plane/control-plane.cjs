@@ -660,6 +660,7 @@ function operatorRouteForGrant(state, grant) {
     const route = state.operatorExecutors.get(grant.sessionId)
     if (route === undefined) return null
     if (route.capabilityId !== grant.id) {
+        if (isTrustedHumanCapability(grant)) return null
         throw createPublicControlError("CAPABILITY_REVOKED")
     }
     if (route.tombstone === true) throw createPublicControlError("CONTROL_BUSY")

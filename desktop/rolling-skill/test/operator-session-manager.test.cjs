@@ -12,6 +12,12 @@ const {ControlPlane} = require("../src/control-plane/control-plane.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
 const {createControlPolicy} = require("../src/control-plane/policy.cjs")
 const {
+    OptimizationControlService,
+} = require("../src/optimization/optimization-control-service.cjs")
+const {
+    OptimizationOperatorGateway,
+} = require("../src/optimization/optimization-operator-gateway.cjs")
+const {
     OperatorSessionManager,
 } = require("../src/operator/operator-session-manager.cjs")
 
@@ -606,8 +612,13 @@ describe("OperatorSessionManager", () => {
         assert.deepEqual(grants[0].actions, createInput().actions)
         assert.deepEqual(grants[0].scopes, createInput().scopes)
         assert.deepEqual(grants[0].budget, {maxRuntimeTurns: 10, maxEvaluations: 2})
+        assert.equal(grants[0].sessionId, created.session.id)
         assert.equal(transports[0].freezeCalls.length, 1)
         assert.equal(transports[0].environment.ROLLING_SKILL_CONTROL_TOKEN, "private-token-1")
+        assert.equal(
+            transports[0].environment.ROLLING_SKILL_OPERATOR_SESSION,
+            created.session.id,
+        )
 
         const session = store.getSession(created.session.id)
         const parent = store.getJob(created.parentJob.id)
@@ -629,6 +640,95 @@ describe("OperatorSessionManager", () => {
         assert.equal(startTurn.input[1].text, createInput().objective)
         assert.equal(JSON.stringify(store.read()).includes("private-token-1"), false)
         assert.equal(JSON.stringify(startTurn.input).includes(runtime().executablePath), false)
+    })
+
+    it("submits an optimization Candidate through one real Operator session identity", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-optimization-"))
+        directories.push(directory)
+        const store = new OperatorJobStore(join(directory, "jobs.json"))
+        const gateway = new OptimizationOperatorGateway()
+        const optimizationRun = {
+            id: "run-1",
+            snapshot: {
+                baseline: {repositoryId: "repository-1", skillId: "skill-1"},
+                dataset: {id: "dataset-1"},
+                operator: {runtimeId: "runtime-1"},
+                targets: [{runtimeId: "runtime-1"}],
+                judge: {runtimeId: "runtime-1"},
+            },
+        }
+        const optimizationControlService = new OptimizationControlService({
+            store: {
+                createRun() {},
+                getRun: () => structuredClone(optimizationRun),
+                listRuns: () => [structuredClone(optimizationRun)],
+                updateCheckpoint() {},
+            },
+            workspaceManager: {async create() {}, async recover() {}},
+            operatorSessionManager: {async create() {}},
+            runner: {
+                run() {}, pause() {}, resume() {}, resumeFinalApproval() {}, stop() {},
+            },
+            operatorGateway: gateway,
+            artifactStore: {createArtifact() {}},
+            async resolvePreflight() {},
+            readArtifact() { return null },
+        })
+        const services = createDomainServices({optimizationControlService})
+        const capabilities = new CapabilityStore()
+        const controlPlane = new ControlPlane({
+            services,
+            capabilities,
+            policy: createControlPolicy(),
+        })
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "optimization.submit_candidate": ({params, controlContext}) => (
+                    services["optimization.submit_candidate"](params, controlContext)
+                ),
+            },
+        })
+        const clients = []
+        const manager = new OperatorSessionManager({
+            store,
+            engine,
+            controlPlane,
+            capabilities,
+            runtimeRegistry: {
+                discover: () => ({available: [runtime()], selected: runtime()}),
+                createClient(_descriptor, options) {
+                    const client = new FakeClient(options)
+                    clients.push(client)
+                    return client
+                },
+            },
+            controlSocketPath: "/private/operator-control.sock",
+            transportFactory(input) { return new FakeTransport(input) },
+            transportSupport: () => ({dynamicToolsReady: true}),
+            workspaceRoot: "/private/operator",
+        })
+        const created = await manager.create(createInput({
+            actions: ["optimizations.execute"],
+        }))
+        const candidate = gateway.requestCandidate({
+            run: {id: "run-1"},
+            epoch: 1,
+            operatorSessionId: created.session.id,
+        })
+
+        const result = await clients[0].options.requestTool({
+            callId: "submit-candidate",
+            method: "optimization.submit_candidate",
+            params: {
+                runId: "run-1",
+                message: "Improve owner drilldown",
+                idempotencyKey: "submit-candidate",
+            },
+        })
+
+        assert.deepEqual(result, {accepted: {runId: "run-1", kind: "candidate"}})
+        assert.deepEqual(await candidate, {message: "Improve owner drilldown"})
     })
 
     it("sets an explicit user-facing Runtime task title before the first turn", async () => {
@@ -1236,6 +1336,12 @@ describe("OperatorSessionManager", () => {
         assert.equal(left.runtimeThreadId, right.runtimeThreadId)
         assert.equal(restarted.clients.length, 1)
         assert.equal(restarted.grants.length, 1)
+        assert.equal(restarted.grants[0].sessionId, created.session.id)
+        assert.equal(
+            restarted.transports[0].environment.ROLLING_SKILL_OPERATOR_SESSION,
+            created.session.id,
+        )
+        assert.equal(restarted.controlPlane.routes.has(created.session.id), true)
         assert.equal(restarted.controlPlane.routes.size, 1)
     })
 

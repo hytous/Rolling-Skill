@@ -592,7 +592,7 @@ class OptimizationControlService {
         const accepted = this.operatorGateway.submitCandidate({
             runId: input.runId,
             message: input.message,
-            operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300),
+            operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}
     }
@@ -601,7 +601,7 @@ class OptimizationControlService {
         const accepted = this.operatorGateway.submitDecision({
             runId: input.runId,
             decision: structuredClone(input.decision),
-            operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300),
+            operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}
     }

@@ -1431,7 +1431,9 @@ class OperatorJobStore {
     createSession(input = {}) {
         const now = nowTimestamp()
         const session = {
-            id: randomUUID(),
+            id: input.id === undefined
+                ? randomUUID()
+                : requiredText(input.id, "Operator session id", 200),
             runtime: normalizeRuntime(input.runtime),
             modelId: nullableText(input.modelId, "Operator model id", 300),
             effort: nullableText(input.effort, "Operator effort", 100),

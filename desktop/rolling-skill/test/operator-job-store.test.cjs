@@ -130,6 +130,21 @@ function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsu
 }
 
 describe("Operator Job store", () => {
+    it("persists one caller-allocated Operator session identity", () => {
+        const {store} = fixture()
+        const session = createSession(store, {id: "operator-session-stable"})
+
+        assert.equal(session.id, "operator-session-stable")
+        assert.equal(store.getSession("operator-session-stable").id, "operator-session-stable")
+        assert.throws(
+            () => createSession(store, {
+                id: "operator-session-stable",
+                capabilityId: "grant-duplicate",
+            }),
+            /duplicate|unique/iu,
+        )
+    })
+
     it("prioritizes active Jobs and exposes revision-bound bounded summary pages", () => {
         const {store} = fixture()
         const first = createSession(store)
@@ -612,7 +627,7 @@ describe("Operator Job store", () => {
         }, /running.*artifact|Step.*output.*status/iu)
     })
 
-    it("creates a private atomic registry and preserves immutable session and Job identity", () => {
+    it("creates a private atomic registry and preserves allocated session and generated Job identity", () => {
         const {path, store} = fixture()
         const requestedRuntime = runtime()
         const requestedBudget = budget()
@@ -652,7 +667,7 @@ describe("Operator Job store", () => {
             readdirSync(dirname(path)).some((name) => name.includes(".tmp-")),
             false,
         )
-        assert.notEqual(session.id, "forged-session")
+        assert.equal(session.id, "forged-session")
         assert.notEqual(job.id, "forged-job")
         assert.notEqual(session.createdAt, "2000-01-01T00:00:00.000Z")
         assert.notEqual(job.createdAt, "2000-01-01T00:00:00.000Z")

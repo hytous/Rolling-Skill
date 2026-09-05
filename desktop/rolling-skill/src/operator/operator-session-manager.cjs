@@ -500,13 +500,13 @@ class OperatorSessionManager {
         return descriptor
     }
 
-    async #authority({actions, scopes, budget, expiresInMs}) {
+    async #authority({sessionId, actions, scopes, budget, expiresInMs}) {
         if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
             throw new Error("Operator action is not exposed to the Runtime Tool")
         }
-        const authoritySessionId = `operator-${randomUUID()}`
+        const operatorSessionId = requiredText(sessionId, "Operator session id", 200)
         const grant = await this.#capabilities.issue({
-            sessionId: authoritySessionId,
+            sessionId: operatorSessionId,
             actions: clone(actions, "Operator actions"),
             scopes: clone(scopes, "Operator scopes"),
             expiresInMs,
@@ -516,7 +516,7 @@ class OperatorSessionManager {
         const invalid = (
             !plainObject(grant) || typeof grant.id !== "string" || grant.id.length === 0 ||
             typeof grant.token !== "string" || grant.token.length === 0 ||
-            grant.sessionId !== authoritySessionId ||
+            grant.sessionId !== operatorSessionId ||
             JSON.stringify(grant.actions) !== JSON.stringify(actions) ||
             JSON.stringify(grant.scopes) !== JSON.stringify(scopes) ||
             JSON.stringify(grant.budget) !== JSON.stringify(expectedBudget)
@@ -527,14 +527,14 @@ class OperatorSessionManager {
             }
             throw new Error("Operator capability issuer returned an invalid grant")
         }
-        return {grant, authoritySessionId}
+        return {grant}
     }
 
     #childEnvironment(authority) {
         return {
             ROLLING_SKILL_CONTROL_SOCKET: this.#controlSocketPath,
             ROLLING_SKILL_CONTROL_TOKEN: authority.grant.token,
-            ROLLING_SKILL_OPERATOR_SESSION: authority.authoritySessionId,
+            ROLLING_SKILL_OPERATOR_SESSION: authority.grant.sessionId,
         }
     }
 
@@ -694,7 +694,7 @@ class OperatorSessionManager {
 
     #registerExecutor(control, replace = undefined) {
         const registration = {
-            sessionId: control.authority.authoritySessionId,
+            sessionId: control.sessionId,
             capabilityId: control.authority.grant.id,
             enabled: false,
             budgetSnapshot: () => this.#budgetSnapshot(control),
@@ -1196,7 +1196,7 @@ class OperatorSessionManager {
         try {
             const result = await this.#controlPlane.invoke({
                 token: control.authority.grant.token,
-                sessionId: control.authority.authoritySessionId,
+                sessionId: control.sessionId,
                 method,
                 params: clone(request.params, "Operator Tool parameters"),
             })
@@ -1317,7 +1317,9 @@ class OperatorSessionManager {
             context.scope,
         )
         const expiresInMs = capabilityLifetime(input, context.budget)
+        const operatorSessionId = randomUUID()
         const authority = await this.#authority({
+            sessionId: operatorSessionId,
             actions: context.actions,
             scopes: context.scope,
             budget: context.budget,
@@ -1336,6 +1338,7 @@ class OperatorSessionManager {
         let control
         try {
             session = this.#store.createSession({
+                id: operatorSessionId,
                 runtime: operatorRuntime(runtime),
                 modelId,
                 effort,
@@ -1709,6 +1712,7 @@ class OperatorSessionManager {
             {persisted: configuration.managedSkillBinding !== undefined},
         )
         const authority = await this.#authority({
+            sessionId: session.id,
             actions: context.actions,
             scopes: context.scope,
             budget: context.budget,

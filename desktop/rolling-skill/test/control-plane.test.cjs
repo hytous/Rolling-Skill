@@ -409,6 +409,39 @@ describe("ControlPlane", () => {
         second.unregister()
     })
 
+    it("lets trusted human control share the real Operator session without entering its Agent lease", async () => {
+        const {control, issued, capabilities, evaluationStore} = createFixture()
+        let routed = 0
+        control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => {
+                routed += 1
+                return {datasets: [], nextCursor: null}
+            },
+        })
+        const human = createTrustedHumanCapabilityIssuer(capabilities).issue({
+            sessionId: issued.sessionId,
+            actions: ["datasets.read"],
+            scopes: {datasetIds: ["dataset-1"]},
+            expiresInMs: 60_000,
+            budget: {},
+        })
+
+        const result = await control.invoke({
+            token: human.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        })
+
+        assert.deepEqual(result.datasets.map((dataset) => dataset.id), ["dataset-1"])
+        assert.equal(routed, 0)
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 1)
+    })
+
     it("checks a disabled lease again after asynchronous scope resolution", async () => {
         let release
         const scope = new Promise((resolve) => { release = resolve })

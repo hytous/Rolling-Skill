@@ -37798,6 +37798,7 @@ var require_contracts = __commonJS({
       candidateArtifactId: id.nullable(),
       installArtifactIds: z.array(id).max(512).optional(),
       evaluationArtifactIds: z.array(id).max(512).optional(),
+      evaluationRunIds: z.array(id).max(512).optional(),
       analysisArtifactId: id.nullable().optional(),
       decisionArtifactId: id.nullable().optional(),
       candidate: publicOptimizationCandidate.optional(),
@@ -45257,6 +45258,7 @@ var require_control_plane = __commonJS({
       const route = state.operatorExecutors.get(grant.sessionId);
       if (route === void 0) return null;
       if (route.capabilityId !== grant.id) {
+        if (isTrustedHumanCapability(grant)) return null;
         throw createPublicControlError("CAPABILITY_REVOKED");
       }
       if (route.tombstone === true) throw createPublicControlError("CONTROL_BUSY");
@@ -52045,7 +52047,7 @@ var require_job_store = __commonJS({
       createSession(input = {}) {
         const now = nowTimestamp();
         const session = {
-          id: randomUUID3(),
+          id: input.id === void 0 ? randomUUID3() : requiredText(input.id, "Operator session id", 200),
           runtime: normalizeRuntime(input.runtime),
           modelId: nullableText(input.modelId, "Operator model id", 300),
           effort: nullableText(input.effort, "Operator effort", 100),
@@ -53338,33 +53340,33 @@ var require_operator_session_manager = __commonJS({
         operatorRuntime(descriptor);
         return descriptor;
       }
-      async #authority({ actions, scopes, budget, expiresInMs }) {
+      async #authority({ sessionId, actions, scopes, budget, expiresInMs }) {
         if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
           throw new Error("Operator action is not exposed to the Runtime Tool");
         }
-        const authoritySessionId = `operator-${randomUUID3()}`;
+        const operatorSessionId = requiredText(sessionId, "Operator session id", 200);
         const grant = await this.#capabilities.issue({
-          sessionId: authoritySessionId,
+          sessionId: operatorSessionId,
           actions: clone(actions, "Operator actions"),
           scopes: clone(scopes, "Operator scopes"),
           expiresInMs,
           budget: capabilityBudget(budget)
         });
         const expectedBudget = capabilityBudget(budget);
-        const invalid = !plainObject(grant) || typeof grant.id !== "string" || grant.id.length === 0 || typeof grant.token !== "string" || grant.token.length === 0 || grant.sessionId !== authoritySessionId || JSON.stringify(grant.actions) !== JSON.stringify(actions) || JSON.stringify(grant.scopes) !== JSON.stringify(scopes) || JSON.stringify(grant.budget) !== JSON.stringify(expectedBudget);
+        const invalid = !plainObject(grant) || typeof grant.id !== "string" || grant.id.length === 0 || typeof grant.token !== "string" || grant.token.length === 0 || grant.sessionId !== operatorSessionId || JSON.stringify(grant.actions) !== JSON.stringify(actions) || JSON.stringify(grant.scopes) !== JSON.stringify(scopes) || JSON.stringify(grant.budget) !== JSON.stringify(expectedBudget);
         if (invalid) {
           if (typeof grant?.id === "string") {
             await bestEffort(() => this.#capabilities.revoke(grant.id));
           }
           throw new Error("Operator capability issuer returned an invalid grant");
         }
-        return { grant, authoritySessionId };
+        return { grant };
       }
       #childEnvironment(authority) {
         return {
           ROLLING_SKILL_CONTROL_SOCKET: this.#controlSocketPath,
           ROLLING_SKILL_CONTROL_TOKEN: authority.grant.token,
-          ROLLING_SKILL_OPERATOR_SESSION: authority.authoritySessionId
+          ROLLING_SKILL_OPERATOR_SESSION: authority.grant.sessionId
         };
       }
       async #freezeTransport(runtime, authority, frozenSelection = null) {
@@ -53489,7 +53491,7 @@ var require_operator_session_manager = __commonJS({
       }
       #registerExecutor(control, replace = void 0) {
         const registration = {
-          sessionId: control.authority.authoritySessionId,
+          sessionId: control.sessionId,
           capabilityId: control.authority.grant.id,
           enabled: false,
           budgetSnapshot: () => this.#budgetSnapshot(control),
@@ -53947,7 +53949,7 @@ var require_operator_session_manager = __commonJS({
         try {
           const result = await this.#controlPlane.invoke({
             token: control.authority.grant.token,
-            sessionId: control.authority.authoritySessionId,
+            sessionId: control.sessionId,
             method,
             params: clone(request.params, "Operator Tool parameters")
           });
@@ -54058,7 +54060,9 @@ var require_operator_session_manager = __commonJS({
           context.scope
         );
         const expiresInMs = capabilityLifetime(input, context.budget);
+        const operatorSessionId = randomUUID3();
         const authority = await this.#authority({
+          sessionId: operatorSessionId,
           actions: context.actions,
           scopes: context.scope,
           budget: context.budget,
@@ -54077,6 +54081,7 @@ var require_operator_session_manager = __commonJS({
         let control;
         try {
           session = this.#store.createSession({
+            id: operatorSessionId,
             runtime: operatorRuntime(runtime),
             modelId,
             effort,
@@ -54419,6 +54424,7 @@ var require_operator_session_manager = __commonJS({
           { persisted: configuration.managedSkillBinding !== void 0 }
         );
         const authority = await this.#authority({
+          sessionId: session.id,
           actions: context.actions,
           scopes: context.scope,
           budget: context.budget,
@@ -55915,6 +55921,7 @@ var require_optimization_control_service = __commonJS({
     }
     function publicEpoch(epoch, readArtifact) {
       const candidate = publicCandidate(boundedArtifactValue(readArtifact, epoch.candidateArtifactId));
+      const evaluationRunIds = [...new Set((epoch.evaluationArtifactIds ?? []).slice(0, 64).map((artifactId) => boundedArtifactValue(readArtifact, artifactId)?.id).filter((evaluationId) => typeof evaluationId === "string" && evaluationId.length > 0))];
       const installationArtifacts = (epoch.installArtifactIds ?? []).slice(0, 64).map((artifactId) => boundedArtifactValue(readArtifact, artifactId)).filter(Boolean);
       const installations = installationArtifacts.flatMap((artifact) => (Array.isArray(artifact.jobs) ? artifact.jobs.slice(0, 64) : [artifact]).map((job) => ({ operation: job.operation ?? artifact.operation, ...job }))).slice(0, 64).map(publicInstallation).filter(Boolean);
       const analysis = publicAnalysis(boundedArtifactValue(readArtifact, epoch.analysisArtifactId));
@@ -55925,6 +55932,7 @@ var require_optimization_control_service = __commonJS({
         candidateArtifactId: epoch.candidateArtifactId ?? null,
         installArtifactIds: structuredClone(epoch.installArtifactIds ?? []),
         evaluationArtifactIds: structuredClone(epoch.evaluationArtifactIds ?? []),
+        evaluationRunIds,
         analysisArtifactId: epoch.analysisArtifactId ?? null,
         decisionArtifactId: epoch.decisionArtifactId ?? null,
         ...candidate ? { candidate } : {},
@@ -56251,7 +56259,7 @@ var require_optimization_control_service = __commonJS({
         const accepted = this.operatorGateway.submitCandidate({
           runId: input.runId,
           message: input.message,
-          operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300)
+          operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300)
         });
         return { accepted };
       }
@@ -56259,7 +56267,7 @@ var require_optimization_control_service = __commonJS({
         const accepted = this.operatorGateway.submitDecision({
           runId: input.runId,
           decision: structuredClone(input.decision),
-          operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300)
+          operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300)
         });
         return { accepted };
       }
@@ -57082,6 +57090,7 @@ var require_optimization_runner = __commonJS({
           }
           const artifact = this.#artifact(jobId, "optimization-evaluation", `${kind}.json`, evaluation, {
             runId: control.runId,
+            evaluationId: evaluation.id,
             epoch,
             kind
           });

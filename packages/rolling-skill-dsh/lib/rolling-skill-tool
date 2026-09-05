@@ -18108,6 +18108,7 @@ var require_contracts = __commonJS({
       candidateArtifactId: id.nullable(),
       installArtifactIds: z2.array(id).max(512).optional(),
       evaluationArtifactIds: z2.array(id).max(512).optional(),
+      evaluationRunIds: z2.array(id).max(512).optional(),
       analysisArtifactId: id.nullable().optional(),
       decisionArtifactId: id.nullable().optional(),
       candidate: publicOptimizationCandidate.optional(),

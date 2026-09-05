@@ -404,7 +404,7 @@ describe("Optimization control service", () => {
         const candidate = context.service.submitCandidate({
             runId: "optimization-run-1",
             message: "Improve owner drilldown",
-        }, {sessionId: "rotating-capability-session", operatorSessionId: "operator-session-1"})
+        }, {sessionId: "operator-session-1", operatorSessionId: "spoofed-session"})
         const decision = context.service.submitDecision({
             runId: "optimization-run-1",
             decision: {schemaVersion: "rolling-skill-optimization-decision/v1", action: "finish", rationale: "Done", observations: []},
