@@ -258,6 +258,98 @@ describe("automatic dataset routing", () => {
 })
 
 describe("scheduled conversation discovery manager", () => {
+    it("passes persisted scan anchors to a capture-specific Runtime history reader", async () => {
+        const captureReads = []
+        const runtime = {
+            async listThreads({archived}) {
+                return {data: archived ? [] : [{id: "thread-1"}], nextCursor: null}
+            },
+            async readThreadForCapture(threadId, options) {
+                captureReads.push({threadId, ...options})
+                return {thread: thread("thread-1")}
+            },
+            async readThread() {
+                throw new Error("legacy full-history read must not run")
+            },
+        }
+        const value = fixture({
+            runtime,
+            runAnalysis: async (input) => JSON.stringify(input.stage === "boundary"
+                ? {
+                    segments: [{
+                        startUserItemId: "thread-1-user-2",
+                        endUserItemId: "thread-1-user-2",
+                        summary: "Incremental billing question",
+                    }],
+                    pendingStartUserItemId: null,
+                }
+                : {
+                    eligibleForCase: false,
+                    sourceKind: "other_internal",
+                    skillName: null,
+                    outcome: "uncertain",
+                    caseType: null,
+                    finalAssistantItemId: null,
+                    confidence: 0.99,
+                    reason: "No reusable Case",
+                }),
+        })
+        value.stateStore.commitThread("codex:/opt/codex-a", "thread-1", {
+            lastInspectedUserItemId: "thread-1-user-1",
+            pendingStartUserItemId: null,
+        })
+
+        await value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+
+        assert.deepEqual(captureReads, [{
+            threadId: "thread-1",
+            afterUserItemId: "thread-1-user-1",
+            pendingStartUserItemId: null,
+        }])
+    })
+
+    it("continues scanning later source threads when one history cannot be read", async () => {
+        const reads = []
+        const runtime = {
+            async listThreads({archived}) {
+                return {
+                    data: archived ? [] : [{id: "thread-1"}, {id: "thread-2"}],
+                    nextCursor: null,
+                }
+            },
+            async readThreadForCapture(threadId) {
+                reads.push(threadId)
+                if (threadId === "thread-1") {
+                    throw new RangeError("Cannot create a string longer than 0x1fffffe8 characters")
+                }
+                return {thread: thread(threadId)}
+            },
+        }
+        const value = fixture({
+            runtime,
+            runAnalysis: async (input) => {
+                value.analyses.push(input)
+                return JSON.stringify({segments: [], pendingStartUserItemId: null})
+            },
+        })
+
+        await value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+
+        assert.deepEqual(reads, ["thread-1", "thread-2"])
+        assert.equal(value.errors.length, 1)
+        assert.match(value.errors[0].message, /0x1fffffe8/u)
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
+            null,
+        )
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-2").lastInspectedUserItemId,
+            "thread-2-user-2",
+        )
+        assert.equal(value.statuses.at(-1).progress.failedThreads, 1)
+        assert.equal(value.statuses.at(-1).progress.threadErrors[0].threadId, "thread-1")
+    })
+
     it("can schedule the next run without silently backfilling historical slots on Host startup", () => {
         const {manager} = fixture({mode: "automatic"})
         let scans = 0

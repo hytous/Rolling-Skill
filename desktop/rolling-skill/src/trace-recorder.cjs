@@ -1,7 +1,9 @@
 const {createHash} = require("node:crypto")
-const {appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readFileSync} = require("node:fs")
+const {appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readSync} = require("node:fs")
 const {join} = require("node:path")
 const {skillContentDigest} = require("./skill-content.cjs")
+
+const TRACE_READ_BUFFER_BYTES = 64 * 1_024
 
 function safeSessionId(value) {
     return String(value).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 120)
@@ -18,6 +20,96 @@ function parseOwnedReference(reference, fileName, maximumLine) {
         throw new Error("Invalid or foreign trace reference")
     }
     return {start, end}
+}
+
+function *traceJsonLines(path, {start = 1, end = Number.POSITIVE_INFINITY} = {}) {
+    const descriptor = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    )
+    const buffer = Buffer.allocUnsafe(TRACE_READ_BUFFER_BYTES)
+    let lineNumber = 1
+    let fragments = []
+    try {
+        while (lineNumber <= end) {
+            const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null)
+            if (bytesRead === 0) break
+            let fragmentStart = 0
+            for (let index = 0; index < bytesRead; index += 1) {
+                if (buffer[index] !== 0x0a) continue
+                if (lineNumber >= start && lineNumber <= end) {
+                    fragments.push(Buffer.from(buffer.subarray(fragmentStart, index)))
+                    const line = Buffer.concat(fragments).toString("utf8").trim()
+                    if (line) yield {lineNumber, entry: JSON.parse(line)}
+                }
+                fragments = []
+                lineNumber += 1
+                fragmentStart = index + 1
+                if (lineNumber > end) break
+            }
+            if (
+                fragmentStart < bytesRead &&
+                lineNumber >= start &&
+                lineNumber <= end
+            ) {
+                fragments.push(Buffer.from(buffer.subarray(fragmentStart, bytesRead)))
+            }
+        }
+        if (fragments.length && lineNumber >= start && lineNumber <= end) {
+            const line = Buffer.concat(fragments).toString("utf8").trim()
+            if (line) yield {lineNumber, entry: JSON.parse(line)}
+        }
+    } finally {
+        closeSync(descriptor)
+    }
+}
+
+function historyItemIndex(item) {
+    return {
+        id: item?.id ?? null,
+        type: item?.type ?? null,
+    }
+}
+
+function historyTurnIndex(turn) {
+    return {
+        id: turn?.id ?? null,
+        status: turn?.status ?? null,
+        itemsView: turn?.itemsView ?? null,
+        items: Array.isArray(turn?.items) ? turn.items.map(historyItemIndex) : [],
+    }
+}
+
+function compactHistoricalResponse(method, message) {
+    if (method === "thread/read" && message?.result?.thread) {
+        const thread = message.result.thread
+        return {
+            ...message,
+            result: {
+                ...message.result,
+                thread: {
+                    id: thread.id ?? null,
+                    sessionId: thread.sessionId ?? null,
+                    forkedFromId: thread.forkedFromId ?? null,
+                    parentThreadId: thread.parentThreadId ?? null,
+                    cwd: thread.cwd ?? null,
+                    modelProvider: thread.modelProvider ?? null,
+                    status: thread.status ?? null,
+                    turns: Array.isArray(thread.turns) ? thread.turns.map(historyTurnIndex) : [],
+                },
+            },
+        }
+    }
+    if (method === "thread/turns/list" && Array.isArray(message?.result?.data)) {
+        return {
+            ...message,
+            result: {
+                ...message.result,
+                data: message.result.data.map(historyTurnIndex),
+            },
+        }
+    }
+    return message
 }
 
 function object(value) {
@@ -329,6 +421,7 @@ class TraceRecorder {
         this.fileName = `${sessionId}.jsonl`
         this.line = 0
         this.latestReference = null
+        this.requestMethods = new Map()
         this.runtime = options.runtime
             ? {
                   runtimeId: options.runtime.runtimeId,
@@ -339,13 +432,30 @@ class TraceRecorder {
     }
 
     record(direction, message) {
+        const requestId = message?.id === undefined || message?.id === null
+            ? null
+            : String(message.id)
+        if (direction === "outbound" && requestId && message?.method) {
+            this.requestMethods.set(requestId, message.method)
+        }
+        const inboundResponse = direction === "inbound" &&
+            requestId &&
+            !message?.method &&
+            (Object.hasOwn(message, "result") || Object.hasOwn(message, "error"))
+        const requestMethod = inboundResponse
+            ? this.requestMethods.get(requestId)
+            : null
+        const recordedMessage = requestMethod
+            ? compactHistoricalResponse(requestMethod, message)
+            : message
+        if (inboundResponse) this.requestMethods.delete(requestId)
         this.line += 1
         const entry = {
             schemaVersion: "rolling-skill-trace/v1",
             sequence: this.line,
             recordedAt: new Date().toISOString(),
             direction,
-            message,
+            message: recordedMessage,
             runtime: this.runtime,
         }
         const descriptor = openSync(
@@ -389,17 +499,13 @@ class TraceRecorder {
             1_000,
             Math.min(Number(options.maxTotalCharacters) || 240_000, 400_000),
         )
-        const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
         const semanticEntries = []
-        const rangeEntries = []
         const codeBuddyStarts = new Map()
         const codeBuddyTerminalSequences = new Map()
         const dshCalls = new Map()
         let compactedEntries = 0
         let collapsedToolCallEntries = 0
-        for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
-            const entry = JSON.parse(lines[lineNumber - 1])
-            rangeEntries.push(entry)
+        for (const {entry} of traceJsonLines(this.path, {start, end})) {
             const event = dshEvent(entry)
             if (event?.type === "tool/call" && event.data?.callId) {
                 dshCalls.set(`${entry.message.params.sessionId}:${event.data.callId}`, {name: event.data.name, arguments: event.data.arguments, startedSequence: entry.sequence})
@@ -412,7 +518,11 @@ class TraceRecorder {
                 codeBuddyTerminalSequences.set(update.toolCallId, entry.sequence)
             }
         }
-        for (let entry of rangeEntries) {
+        // Re-open the trace for the semantic pass instead of retaining every raw
+        // entry from the evidence range. This keeps memory bounded by one JSONL
+        // record plus the deliberately compact semantic result set.
+        for (const line of traceJsonLines(this.path, {start, end})) {
+            let entry = line.entry
             const update = codeBuddyUpdate(entry)
             if (
                 update.sessionUpdate === "tool_call" &&
@@ -477,12 +587,13 @@ class TraceRecorder {
 
     readRecent(limit = 200) {
         try {
-            return readFileSync(this.path, "utf8")
-                .trim()
-                .split("\n")
-                .filter(Boolean)
-                .slice(-Math.max(1, Math.min(limit, 1000)))
-                .map((line) => JSON.parse(line))
+            const maximum = Math.max(1, Math.min(limit, 1000))
+            const recent = []
+            for (const {entry} of traceJsonLines(this.path)) {
+                recent.push(entry)
+                if (recent.length > maximum) recent.shift()
+            }
+            return recent
         } catch {
             return []
         }
@@ -490,11 +601,9 @@ class TraceRecorder {
 
     referenceForEpisode({threadId, startItemId, endItemId}) {
         try {
-            const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
             let startLine = null
             let endLine = null
-            for (const line of lines) {
-                const event = JSON.parse(line)
+            for (const {entry: event} of traceJsonLines(this.path)) {
                 const params = event.message?.params ?? {}
                 const historicalThread = event.message?.result?.thread ?? null
                 const eventThreadId =

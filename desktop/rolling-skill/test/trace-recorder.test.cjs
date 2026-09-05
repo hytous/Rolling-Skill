@@ -16,6 +16,57 @@ afterEach(() => {
 })
 
 describe("local app-server trace recorder", () => {
+    it("reads trace ranges incrementally without whole-file reads", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-streaming-trace-"))
+        temporaryDirectories.push(directory)
+        const fs = require("node:fs")
+        const modulePath = require.resolve("../src/trace-recorder.cjs")
+        const originalReadFileSync = fs.readFileSync
+        const source = originalReadFileSync(modulePath, "utf8")
+        const IsolatedModule = module.constructor
+        const isolatedModule = new IsolatedModule(modulePath, module)
+        isolatedModule.filename = modulePath
+        isolatedModule.paths = IsolatedModule._nodeModulePaths(require("node:path").dirname(modulePath))
+        let StreamingTraceRecorder
+        try {
+            fs.readFileSync = () => {
+                throw new Error("whole-file trace reads are forbidden")
+            }
+            isolatedModule._compile(source, modulePath)
+            StreamingTraceRecorder = isolatedModule.exports.TraceRecorder
+        } finally {
+            fs.readFileSync = originalReadFileSync
+        }
+        const recorder = new StreamingTraceRecorder(directory, {sessionId: "streaming"})
+        const mark = recorder.mark()
+        recorder.record("inbound", {
+            method: "item/started",
+            params: {threadId: "thread-1", turnId: "turn-1", item: {id: "user-1", type: "userMessage"}},
+        })
+        recorder.record("inbound", {
+            method: "item/agentMessage/delta",
+            params: {threadId: "thread-1", turnId: "turn-1", itemId: "answer-1", delta: "answer"},
+        })
+        recorder.record("inbound", {
+            method: "item/completed",
+            params: {threadId: "thread-1", turnId: "turn-1", item: {id: "answer-1", type: "agentMessage", text: "answer"}},
+        })
+
+        const reference = recorder.referenceFrom(mark)
+        const evidence = recorder.evidenceForReference(reference)
+
+        assert.equal(evidence.reference, "trace://streaming.jsonl#L1-L3")
+        assert.deepEqual(recorder.readRecent(1).map((entry) => entry.sequence), [3])
+        assert.equal(
+            recorder.referenceForEpisode({
+                threadId: "thread-1",
+                startItemId: "user-1",
+                endItemId: "answer-1",
+            }),
+            "trace://streaming.jsonl#L1-L3",
+        )
+    })
+
     it("keeps DSH tool/result evidence and complete Case coverage instead of filling the budget with token chunks", () => {
         const directory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-trace-"))
         temporaryDirectories.push(directory)
@@ -66,6 +117,58 @@ describe("local app-server trace recorder", () => {
             providerId: "codex",
             version: "0.147.0",
         })
+    })
+
+    it("records only a compact identity index for historical thread responses", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-history-trace-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "history-index"})
+        const oversizedPayload = "oversized-history-payload-".repeat(4_000)
+        const response = {
+            id: 7,
+            result: {
+                thread: {
+                    id: "thread-1",
+                    cwd: "/workspace",
+                    turns: [{
+                        id: "turn-1",
+                        status: "completed",
+                        items: [
+                            {id: "user-1", type: "userMessage", content: [{type: "text", text: "question"}]},
+                            {id: "tool-1", type: "commandExecution", aggregatedOutput: oversizedPayload},
+                            {id: "answer-1", type: "agentMessage", text: "answer"},
+                        ],
+                    }],
+                },
+            },
+        }
+        recorder.record("outbound", {
+            id: 7,
+            method: "thread/read",
+            params: {threadId: "thread-1", includeTurns: true},
+        })
+        recorder.record("inbound", {
+            id: 7,
+            method: "item/tool/call",
+            params: {threadId: "operator-thread", callId: "tool-call-1"},
+        })
+        recorder.record("inbound", response)
+
+        const traceText = readFileSync(recorder.path, "utf8")
+
+        assert.doesNotMatch(traceText, /oversized-history-payload/u)
+        assert.match(traceText, /user-1/u)
+        assert.match(traceText, /tool-1/u)
+        assert.match(traceText, /answer-1/u)
+        assert.equal(response.result.thread.turns[0].items[1].aggregatedOutput, oversizedPayload)
+        assert.equal(
+            recorder.referenceForEpisode({
+                threadId: "thread-1",
+                startItemId: "user-1",
+                endItemId: "answer-1",
+            }),
+            "trace://history-index.jsonl#L3-L3",
+        )
     })
 
     it("freezes an exact range from a mark and produces bounded Judge evidence", () => {

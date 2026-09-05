@@ -10,6 +10,42 @@ const {CodexRuntimeProvider} = require("../src/codex-runtime-provider.cjs")
 
 const descriptor = new CodexRuntimeProvider().discover()[0] ?? null
 
+function captureHistoryTurn(id, userItemId, output = "") {
+    return {
+        id,
+        items: [
+            {
+                type: "userMessage",
+                id: userItemId,
+                clientId: null,
+                content: [{type: "text", text: `question ${userItemId}`}],
+            },
+            ...(output ? [{
+                type: "commandExecution",
+                id: `tool-${id}`,
+                command: "billing-cli query",
+                status: "completed",
+                aggregatedOutput: output,
+                exitCode: 0,
+                durationMs: 10,
+            }] : []),
+            {
+                type: "agentMessage",
+                id: `answer-${id}`,
+                text: `answer ${id}`,
+                phase: "final_answer",
+                memoryCitation: null,
+            },
+        ],
+        itemsView: "full",
+        status: "completed",
+        error: null,
+        startedAt: 1,
+        completedAt: 2,
+        durationMs: 1_000,
+    }
+}
+
 describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-app-server-"))
     const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-app-server-trace-"))
@@ -1075,6 +1111,126 @@ describe("Codex app-server request construction", () => {
             ],
         )
         assert.equal(requests.every(({params}) => params.cwd === "/tmp/workspace"), true)
+    })
+
+    it("reads only the bounded capture history needed to reach the persisted user anchor", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        const requests = []
+        const oversizedOutput = "historical-output-".repeat(8_000)
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            if (method === "thread/read") {
+                return {thread: {
+                    id: "thread-1",
+                    sessionId: "thread-1",
+                    cwd: "/tmp/workspace",
+                    modelProvider: "openai",
+                    turns: [],
+                }}
+            }
+            if (!params.cursor) {
+                return {
+                    data: [
+                        captureHistoryTurn("turn-newest", "user-newest", oversizedOutput),
+                        captureHistoryTurn("turn-middle", "user-middle"),
+                    ],
+                    nextCursor: "older-page",
+                    backwardsCursor: "newer-page",
+                }
+            }
+            return {
+                data: [
+                    captureHistoryTurn("turn-anchor", "user-anchor"),
+                    captureHistoryTurn("turn-older", "user-older"),
+                ],
+                nextCursor: null,
+                backwardsCursor: "middle-page",
+            }
+        }
+
+        const result = await client.readThreadForCapture("thread-1", {
+            afterUserItemId: "user-anchor",
+        })
+
+        assert.deepEqual(requests, [
+            {method: "thread/read", params: {threadId: "thread-1", includeTurns: false}},
+            {method: "thread/turns/list", params: {
+                threadId: "thread-1",
+                limit: 10,
+                sortDirection: "desc",
+                itemsView: "full",
+            }},
+            {method: "thread/turns/list", params: {
+                threadId: "thread-1",
+                cursor: "older-page",
+                limit: 10,
+                sortDirection: "desc",
+                itemsView: "full",
+            }},
+        ])
+        assert.deepEqual(
+            result.thread.turns.map((turn) => turn.id),
+            ["turn-anchor", "turn-middle", "turn-newest"],
+        )
+        assert.ok(
+            result.thread.turns.at(-1).items.find((item) => item.type === "commandExecution")
+                .aggregatedOutput.length <= 4_100,
+        )
+        assert.equal(result.history.anchorFound, true)
+        assert.equal(result.history.truncated, false)
+    })
+
+    it("falls back for incompatible paginated histories while bounding an initial scan", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        const requests = []
+        const turns = Array.from({length: 55}, (_, index) =>
+            captureHistoryTurn(`turn-${index}`, `user-${index}`))
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            if (method === "thread/turns/list") {
+                throw new Error("invalid paginated history lineage for thread-1")
+            }
+            if (params.includeTurns === true) {
+                return {thread: {
+                    id: "thread-1",
+                    sessionId: "thread-1",
+                    cwd: "/tmp/workspace",
+                    modelProvider: "openai",
+                    turns,
+                }}
+            }
+            return {thread: {
+                id: "thread-1",
+                sessionId: "thread-1",
+                cwd: "/tmp/workspace",
+                modelProvider: "openai",
+                turns: [],
+            }}
+        }
+
+        const result = await client.readThreadForCapture("thread-1")
+
+        assert.deepEqual(
+            requests.map(({method, params}) => ({method, includeTurns: params.includeTurns})),
+            [
+                {method: "thread/read", includeTurns: false},
+                {method: "thread/turns/list", includeTurns: undefined},
+                {method: "thread/read", includeTurns: true},
+            ],
+        )
+        assert.equal(result.thread.turns.length, 40)
+        assert.equal(result.thread.turns[0].id, "turn-15")
+        assert.equal(result.thread.turns.at(-1).id, "turn-54")
+        assert.equal(result.history.mode, "legacy-fallback")
+        assert.equal(result.history.truncated, true)
     })
 
     it("can override the model and reasoning effort for this turn and subsequent turns", async () => {

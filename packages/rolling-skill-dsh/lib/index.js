@@ -41546,7 +41546,15 @@ var require_automatic_capture = __commonJS({
       }
       async runSlot(slot, profile = this.profile(), { complete = true } = {}) {
         this.stateStore.beginSlot(slot, this.now());
-        this.progress = { stage: "listing", startedAt: this.now().toISOString(), totalThreads: 0, completedThreads: 0, analysisCount: 0 };
+        this.progress = {
+          stage: "listing",
+          startedAt: this.now().toISOString(),
+          totalThreads: 0,
+          completedThreads: 0,
+          failedThreads: 0,
+          threadErrors: [],
+          analysisCount: 0
+        };
         this.emitStatus();
         const targets = arrays(profile.targets);
         if (!targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR);
@@ -41575,19 +41583,35 @@ var require_automatic_capture = __commonJS({
           this.emitStatus();
           const sourceRevision = typeof summary.sourceRevision === "string" ? summary.sourceRevision : null;
           const cursor = this.stateStore.thread(runtimeId, summary.id);
-          if (!sourceRevision || cursor.sourceRevision !== sourceRevision) {
-            await this.scanThread({
-              runtime,
-              runtimeId,
+          try {
+            if (!sourceRevision || cursor.sourceRevision !== sourceRevision) {
+              await this.scanThread({
+                runtime,
+                runtimeId,
+                threadId: summary.id,
+                skills: scopedSkills,
+                datasets: scopedDatasets,
+                profile
+              });
+              if (sourceRevision) this.stateStore.commitThread(runtimeId, summary.id, { sourceRevision }, this.now());
+            }
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error ?? "Automatic capture source task failed"));
+            this.progress.failedThreads += 1;
+            this.progress.threadErrors.push({
               threadId: summary.id,
-              skills: scopedSkills,
-              datasets: scopedDatasets,
-              profile
+              message: failure.message.slice(0, 500)
             });
-            if (sourceRevision) this.stateStore.commitThread(runtimeId, summary.id, { sourceRevision }, this.now());
+            this.progress.threadErrors = this.progress.threadErrors.slice(-20);
+            this.onError(failure);
           }
           this.progress.completedThreads += 1;
           this.emitStatus();
+        }
+        if (visibleThreads.length && this.progress.failedThreads === visibleThreads.length) {
+          throw new Error(
+            `Automatic capture could not inspect any source tasks: ${this.progress.threadErrors[0]?.message ?? "unknown error"}`
+          );
         }
         if (complete && this.waitForCurationOnScan) {
           this.progress.stage = "curating";
@@ -41862,12 +41886,15 @@ The previous boundary result was rejected: ${reason}. Return corrected JSON only
         }
       }
       async scanThread({ runtime, runtimeId, threadId, skills, datasets, profile }) {
-        const response = await runtime.readThread(threadId);
+        const cursor = this.stateStore.thread(runtimeId, threadId);
+        const response = typeof runtime.readThreadForCapture === "function" ? await runtime.readThreadForCapture(threadId, {
+          afterUserItemId: cursor.lastInspectedUserItemId,
+          pendingStartUserItemId: cursor.pendingStartUserItemId
+        }) : await runtime.readThread(threadId);
         const thread = response?.thread;
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`);
         const messages = this.userMessages(thread);
         if (!messages.length) return false;
-        const cursor = this.stateStore.thread(runtimeId, threadId);
         if (isAutomaticAnalysisTask(messages)) {
           this.rememberAnalysisThread(threadId);
           if (cursor.lastInspectedUserItemId !== messages.at(-1).id || cursor.pendingStartUserItemId !== null) {
@@ -60492,9 +60519,10 @@ var require_evaluation_turn_error = __commonJS({
 var require_trace_recorder = __commonJS({
   "../../desktop/rolling-skill/src/trace-recorder.cjs"(exports, module) {
     var { createHash } = __require("node:crypto");
-    var { appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readFileSync } = __require("node:fs");
+    var { appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readSync } = __require("node:fs");
     var { join } = __require("node:path");
     var { skillContentDigest } = require_skill_content();
+    var TRACE_READ_BUFFER_BYTES = 64 * 1024;
     function safeSessionId(value) {
       return String(value).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 120);
     }
@@ -60509,6 +60537,88 @@ var require_trace_recorder = __commonJS({
         throw new Error("Invalid or foreign trace reference");
       }
       return { start, end };
+    }
+    function* traceJsonLines(path, { start = 1, end = Number.POSITIVE_INFINITY } = {}) {
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+      );
+      const buffer = Buffer.allocUnsafe(TRACE_READ_BUFFER_BYTES);
+      let lineNumber = 1;
+      let fragments = [];
+      try {
+        while (lineNumber <= end) {
+          const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+          if (bytesRead === 0) break;
+          let fragmentStart = 0;
+          for (let index = 0; index < bytesRead; index += 1) {
+            if (buffer[index] !== 10) continue;
+            if (lineNumber >= start && lineNumber <= end) {
+              fragments.push(Buffer.from(buffer.subarray(fragmentStart, index)));
+              const line = Buffer.concat(fragments).toString("utf8").trim();
+              if (line) yield { lineNumber, entry: JSON.parse(line) };
+            }
+            fragments = [];
+            lineNumber += 1;
+            fragmentStart = index + 1;
+            if (lineNumber > end) break;
+          }
+          if (fragmentStart < bytesRead && lineNumber >= start && lineNumber <= end) {
+            fragments.push(Buffer.from(buffer.subarray(fragmentStart, bytesRead)));
+          }
+        }
+        if (fragments.length && lineNumber >= start && lineNumber <= end) {
+          const line = Buffer.concat(fragments).toString("utf8").trim();
+          if (line) yield { lineNumber, entry: JSON.parse(line) };
+        }
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+    function historyItemIndex(item) {
+      return {
+        id: item?.id ?? null,
+        type: item?.type ?? null
+      };
+    }
+    function historyTurnIndex(turn) {
+      return {
+        id: turn?.id ?? null,
+        status: turn?.status ?? null,
+        itemsView: turn?.itemsView ?? null,
+        items: Array.isArray(turn?.items) ? turn.items.map(historyItemIndex) : []
+      };
+    }
+    function compactHistoricalResponse(method, message) {
+      if (method === "thread/read" && message?.result?.thread) {
+        const thread = message.result.thread;
+        return {
+          ...message,
+          result: {
+            ...message.result,
+            thread: {
+              id: thread.id ?? null,
+              sessionId: thread.sessionId ?? null,
+              forkedFromId: thread.forkedFromId ?? null,
+              parentThreadId: thread.parentThreadId ?? null,
+              cwd: thread.cwd ?? null,
+              modelProvider: thread.modelProvider ?? null,
+              status: thread.status ?? null,
+              turns: Array.isArray(thread.turns) ? thread.turns.map(historyTurnIndex) : []
+            }
+          }
+        };
+      }
+      if (method === "thread/turns/list" && Array.isArray(message?.result?.data)) {
+        return {
+          ...message,
+          result: {
+            ...message.result,
+            data: message.result.data.map(historyTurnIndex)
+          }
+        };
+      }
+      return message;
     }
     function object(value) {
       return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -60787,6 +60897,7 @@ var require_trace_recorder = __commonJS({
         this.fileName = `${sessionId}.jsonl`;
         this.line = 0;
         this.latestReference = null;
+        this.requestMethods = /* @__PURE__ */ new Map();
         this.runtime = options2.runtime ? {
           runtimeId: options2.runtime.runtimeId,
           providerId: options2.runtime.providerId,
@@ -60794,13 +60905,21 @@ var require_trace_recorder = __commonJS({
         } : null;
       }
       record(direction, message) {
+        const requestId = message?.id === void 0 || message?.id === null ? null : String(message.id);
+        if (direction === "outbound" && requestId && message?.method) {
+          this.requestMethods.set(requestId, message.method);
+        }
+        const inboundResponse = direction === "inbound" && requestId && !message?.method && (Object.hasOwn(message, "result") || Object.hasOwn(message, "error"));
+        const requestMethod = inboundResponse ? this.requestMethods.get(requestId) : null;
+        const recordedMessage = requestMethod ? compactHistoricalResponse(requestMethod, message) : message;
+        if (inboundResponse) this.requestMethods.delete(requestId);
         this.line += 1;
         const entry = {
           schemaVersion: "rolling-skill-trace/v1",
           sequence: this.line,
           recordedAt: (/* @__PURE__ */ new Date()).toISOString(),
           direction,
-          message,
+          message: recordedMessage,
           runtime: this.runtime
         };
         const descriptor = openSync(
@@ -60839,17 +60958,13 @@ var require_trace_recorder = __commonJS({
           1e3,
           Math.min(Number(options2.maxTotalCharacters) || 24e4, 4e5)
         );
-        const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean);
         const semanticEntries = [];
-        const rangeEntries = [];
         const codeBuddyStarts = /* @__PURE__ */ new Map();
         const codeBuddyTerminalSequences = /* @__PURE__ */ new Map();
         const dshCalls = /* @__PURE__ */ new Map();
         let compactedEntries = 0;
         let collapsedToolCallEntries = 0;
-        for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
-          const entry = JSON.parse(lines[lineNumber - 1]);
-          rangeEntries.push(entry);
+        for (const { entry } of traceJsonLines(this.path, { start, end })) {
           const event = dshEvent(entry);
           if (event?.type === "tool/call" && event.data?.callId) {
             dshCalls.set(`${entry.message.params.sessionId}:${event.data.callId}`, { name: event.data.name, arguments: event.data.arguments, startedSequence: entry.sequence });
@@ -60862,7 +60977,8 @@ var require_trace_recorder = __commonJS({
             codeBuddyTerminalSequences.set(update.toolCallId, entry.sequence);
           }
         }
-        for (let entry of rangeEntries) {
+        for (const line of traceJsonLines(this.path, { start, end })) {
+          let entry = line.entry;
           const update = codeBuddyUpdate(entry);
           if (update.sessionUpdate === "tool_call" && update.toolCallId && codeBuddyTerminalSequences.has(update.toolCallId)) {
             compactedEntries += 1;
@@ -60916,18 +61032,22 @@ var require_trace_recorder = __commonJS({
       }
       readRecent(limit = 200) {
         try {
-          return readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean).slice(-Math.max(1, Math.min(limit, 1e3))).map((line) => JSON.parse(line));
+          const maximum = Math.max(1, Math.min(limit, 1e3));
+          const recent = [];
+          for (const { entry } of traceJsonLines(this.path)) {
+            recent.push(entry);
+            if (recent.length > maximum) recent.shift();
+          }
+          return recent;
         } catch {
           return [];
         }
       }
       referenceForEpisode({ threadId, startItemId, endItemId }) {
         try {
-          const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean);
           let startLine = null;
           let endLine = null;
-          for (const line of lines) {
-            const event = JSON.parse(line);
+          for (const { entry: event } of traceJsonLines(this.path)) {
             const params = event.message?.params ?? {};
             const historicalThread = event.message?.result?.thread ?? null;
             const eventThreadId = params.threadId ?? params.thread?.id ?? historicalThread?.id ?? null;
@@ -60977,6 +61097,12 @@ var require_codex_app_server = __commonJS({
     var MAX_DYNAMIC_TOOL_ARGUMENT_BYTES = 1048576;
     var MAX_DYNAMIC_TOOL_RESPONSE_BYTES = 256 * 1024;
     var MAX_PRE_RESPONSE_TERMINAL_IDS = 32;
+    var CAPTURE_TURN_PAGE_SIZE = 10;
+    var CAPTURE_INITIAL_TURN_LIMIT = 40;
+    var CAPTURE_INCREMENTAL_TURN_LIMIT = 120;
+    var CAPTURE_USER_TEXT_LIMIT = 12e4;
+    var CAPTURE_ITEM_TEXT_LIMIT = 24e3;
+    var CAPTURE_COMMAND_OUTPUT_LIMIT = 4e3;
     var DYNAMIC_TOOL_NAMESPACE = "rolling_skill";
     var TERMINAL_TURN_NOTIFICATIONS = /* @__PURE__ */ new Set([
       "turn/canceled",
@@ -61007,6 +61133,139 @@ var require_codex_app_server = __commonJS({
     }
     function jsonBytes(value) {
       return Buffer.byteLength(JSON.stringify(value), "utf8");
+    }
+    function boundedCaptureText(value, limit, keepTail = false) {
+      const text2 = String(value ?? "");
+      if (text2.length <= limit) return text2;
+      const marker = "\n\u2026[historical content compacted]\u2026\n";
+      const available = Math.max(0, limit - marker.length);
+      if (!keepTail) return `${text2.slice(0, available)}${marker}`;
+      const head = Math.ceil(available / 2);
+      const tail = Math.floor(available / 2);
+      return `${text2.slice(0, head)}${marker}${text2.slice(-tail)}`;
+    }
+    function boundedCaptureValue(value, limit = CAPTURE_ITEM_TEXT_LIMIT) {
+      const state = { remaining: limit, seen: /* @__PURE__ */ new WeakSet() };
+      const visit = (candidate, depth = 0) => {
+        if (state.remaining <= 0) return "[historical content omitted]";
+        if (typeof candidate === "string") {
+          const text2 = boundedCaptureText(candidate, state.remaining, true);
+          state.remaining -= text2.length;
+          return text2;
+        }
+        if (candidate === null || candidate === void 0 || typeof candidate !== "object") {
+          state.remaining -= String(candidate ?? "").length;
+          return candidate;
+        }
+        if (depth >= 12 || state.seen.has(candidate)) return "[historical structure omitted]";
+        state.seen.add(candidate);
+        if (Array.isArray(candidate)) {
+          const output2 = [];
+          for (const child of candidate.slice(0, 100)) {
+            if (state.remaining <= 0) break;
+            output2.push(visit(child, depth + 1));
+          }
+          if (candidate.length > output2.length) output2.push("[historical entries omitted]");
+          return output2;
+        }
+        const output = {};
+        const entries = Object.entries(candidate);
+        for (const [key, child] of entries.slice(0, 100)) {
+          if (state.remaining <= 0) break;
+          state.remaining -= key.length;
+          output[key] = visit(child, depth + 1);
+        }
+        if (entries.length > Object.keys(output).length) output._compacted = true;
+        return output;
+      };
+      return visit(value);
+    }
+    function compactCaptureItem(item) {
+      const base = { id: item?.id ?? null, type: item?.type ?? null };
+      if (item?.type === "userMessage") {
+        return {
+          ...base,
+          clientId: item.clientId ?? null,
+          content: boundedCaptureValue(item.content, CAPTURE_USER_TEXT_LIMIT)
+        };
+      }
+      if (item?.type === "agentMessage") {
+        return {
+          ...base,
+          text: boundedCaptureText(item.text, CAPTURE_ITEM_TEXT_LIMIT),
+          phase: item.phase ?? null,
+          memoryCitation: boundedCaptureValue(item.memoryCitation)
+        };
+      }
+      if (item?.type === "reasoning") {
+        return {
+          ...base,
+          summary: boundedCaptureValue(item.summary),
+          content: []
+        };
+      }
+      if (item?.type === "commandExecution") {
+        return {
+          ...base,
+          command: String(item.command ?? ""),
+          status: item.status ?? null,
+          exitCode: item.exitCode ?? null,
+          durationMs: item.durationMs ?? null,
+          aggregatedOutput: boundedCaptureText(
+            item.aggregatedOutput ?? item.output,
+            CAPTURE_COMMAND_OUTPUT_LIMIT,
+            true
+          )
+        };
+      }
+      if (["mcpToolCall", "dynamicToolCall", "collabAgentToolCall"].includes(item?.type)) {
+        return {
+          ...base,
+          server: item.server ?? null,
+          tool: item.tool ?? null,
+          status: item.status ?? null,
+          durationMs: item.durationMs ?? null,
+          arguments: boundedCaptureValue(item.arguments),
+          result: boundedCaptureValue(item.result),
+          error: boundedCaptureValue(item.error)
+        };
+      }
+      return {
+        ...boundedCaptureValue(item),
+        ...base
+      };
+    }
+    function compactCaptureTurn(turn) {
+      return {
+        ...turn,
+        items: Array.isArray(turn?.items) ? turn.items.map(compactCaptureItem) : []
+      };
+    }
+    function turnHasUserItem(turn, itemId) {
+      return Boolean(itemId) && (turn?.items ?? []).some((item) => item?.type === "userMessage" && item?.id === itemId);
+    }
+    function capturePaginationUnavailable(error) {
+      return error?.code === -32601 || /(?:invalid paginated history lineage|not supported yet|method not found|unknown method)/iu.test(
+        String(error?.message ?? "")
+      );
+    }
+    function boundedCaptureTurns(turns, { anchorItemId = null, limit }) {
+      const descending = [...turns].reverse();
+      const selected = [];
+      let anchorFound = false;
+      for (const turn of descending) {
+        selected.push(compactCaptureTurn(turn));
+        if (turnHasUserItem(turn, anchorItemId)) {
+          anchorFound = true;
+          break;
+        }
+        if (selected.length >= limit) break;
+      }
+      return {
+        turns: selected.reverse(),
+        anchorFound,
+        truncated: !anchorFound && selected.length < descending.length
+      };
     }
     function turnSandboxPolicy(sandbox) {
       if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
@@ -61477,6 +61736,64 @@ var require_codex_app_server = __commonJS({
       }
       readThread(threadId) {
         return this.request("thread/read", { threadId, includeTurns: true });
+      }
+      async readThreadForCapture(threadId, options2 = {}) {
+        const metadata = await this.request("thread/read", { threadId, includeTurns: false });
+        const anchorItemId = options2.pendingStartUserItemId ?? options2.afterUserItemId ?? null;
+        const turnLimit = anchorItemId ? CAPTURE_INCREMENTAL_TURN_LIMIT : CAPTURE_INITIAL_TURN_LIMIT;
+        const turns = [];
+        const seenCursors = /* @__PURE__ */ new Set();
+        let cursor = null;
+        let anchorFound = false;
+        let exhausted = false;
+        try {
+          while (turns.length < turnLimit) {
+            const page = await this.request("thread/turns/list", {
+              threadId,
+              ...cursor ? { cursor } : {},
+              limit: CAPTURE_TURN_PAGE_SIZE,
+              sortDirection: "desc",
+              itemsView: "full"
+            });
+            for (const turn of page?.data ?? []) {
+              turns.push(compactCaptureTurn(turn));
+              if (turnHasUserItem(turn, anchorItemId)) {
+                anchorFound = true;
+                break;
+              }
+              if (turns.length >= turnLimit) break;
+            }
+            if (anchorFound) break;
+            const nextCursor = page?.nextCursor ?? null;
+            if (!nextCursor || seenCursors.has(nextCursor)) {
+              exhausted = true;
+              break;
+            }
+            seenCursors.add(nextCursor);
+            cursor = nextCursor;
+          }
+          return {
+            ...metadata,
+            thread: { ...metadata.thread, turns: turns.reverse() },
+            history: {
+              mode: "paginated",
+              anchorFound,
+              truncated: !anchorFound && !exhausted
+            }
+          };
+        } catch (error) {
+          if (!capturePaginationUnavailable(error)) throw error;
+          const legacy = await this.request("thread/read", { threadId, includeTurns: true });
+          const bounded = boundedCaptureTurns(legacy?.thread?.turns ?? [], {
+            anchorItemId,
+            limit: turnLimit
+          });
+          return {
+            ...legacy,
+            thread: { ...metadata.thread, ...legacy.thread, turns: bounded.turns },
+            history: { mode: "legacy-fallback", ...bounded }
+          };
+        }
       }
       setThreadName(threadId, name) {
         return this.request("thread/name/set", { threadId, name });

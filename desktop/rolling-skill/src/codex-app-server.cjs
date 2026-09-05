@@ -18,6 +18,12 @@ const {
 const MAX_DYNAMIC_TOOL_ARGUMENT_BYTES = 1_048_576
 const MAX_DYNAMIC_TOOL_RESPONSE_BYTES = 256 * 1_024
 const MAX_PRE_RESPONSE_TERMINAL_IDS = 32
+const CAPTURE_TURN_PAGE_SIZE = 10
+const CAPTURE_INITIAL_TURN_LIMIT = 40
+const CAPTURE_INCREMENTAL_TURN_LIMIT = 120
+const CAPTURE_USER_TEXT_LIMIT = 120_000
+const CAPTURE_ITEM_TEXT_LIMIT = 24_000
+const CAPTURE_COMMAND_OUTPUT_LIMIT = 4_000
 const DYNAMIC_TOOL_NAMESPACE = "rolling_skill"
 const TERMINAL_TURN_NOTIFICATIONS = new Set([
     "turn/canceled",
@@ -50,6 +56,148 @@ function plainObject(value) {
 
 function jsonBytes(value) {
     return Buffer.byteLength(JSON.stringify(value), "utf8")
+}
+
+function boundedCaptureText(value, limit, keepTail = false) {
+    const text = String(value ?? "")
+    if (text.length <= limit) return text
+    const marker = "\n…[historical content compacted]…\n"
+    const available = Math.max(0, limit - marker.length)
+    if (!keepTail) return `${text.slice(0, available)}${marker}`
+    const head = Math.ceil(available / 2)
+    const tail = Math.floor(available / 2)
+    return `${text.slice(0, head)}${marker}${text.slice(-tail)}`
+}
+
+function boundedCaptureValue(value, limit = CAPTURE_ITEM_TEXT_LIMIT) {
+    const state = {remaining: limit, seen: new WeakSet()}
+    const visit = (candidate, depth = 0) => {
+        if (state.remaining <= 0) return "[historical content omitted]"
+        if (typeof candidate === "string") {
+            const text = boundedCaptureText(candidate, state.remaining, true)
+            state.remaining -= text.length
+            return text
+        }
+        if (candidate === null || candidate === undefined || typeof candidate !== "object") {
+            state.remaining -= String(candidate ?? "").length
+            return candidate
+        }
+        if (depth >= 12 || state.seen.has(candidate)) return "[historical structure omitted]"
+        state.seen.add(candidate)
+        if (Array.isArray(candidate)) {
+            const output = []
+            for (const child of candidate.slice(0, 100)) {
+                if (state.remaining <= 0) break
+                output.push(visit(child, depth + 1))
+            }
+            if (candidate.length > output.length) output.push("[historical entries omitted]")
+            return output
+        }
+        const output = {}
+        const entries = Object.entries(candidate)
+        for (const [key, child] of entries.slice(0, 100)) {
+            if (state.remaining <= 0) break
+            state.remaining -= key.length
+            output[key] = visit(child, depth + 1)
+        }
+        if (entries.length > Object.keys(output).length) output._compacted = true
+        return output
+    }
+    return visit(value)
+}
+
+function compactCaptureItem(item) {
+    const base = {id: item?.id ?? null, type: item?.type ?? null}
+    if (item?.type === "userMessage") {
+        return {
+            ...base,
+            clientId: item.clientId ?? null,
+            content: boundedCaptureValue(item.content, CAPTURE_USER_TEXT_LIMIT),
+        }
+    }
+    if (item?.type === "agentMessage") {
+        return {
+            ...base,
+            text: boundedCaptureText(item.text, CAPTURE_ITEM_TEXT_LIMIT),
+            phase: item.phase ?? null,
+            memoryCitation: boundedCaptureValue(item.memoryCitation),
+        }
+    }
+    if (item?.type === "reasoning") {
+        return {
+            ...base,
+            summary: boundedCaptureValue(item.summary),
+            content: [],
+        }
+    }
+    if (item?.type === "commandExecution") {
+        return {
+            ...base,
+            command: String(item.command ?? ""),
+            status: item.status ?? null,
+            exitCode: item.exitCode ?? null,
+            durationMs: item.durationMs ?? null,
+            aggregatedOutput: boundedCaptureText(
+                item.aggregatedOutput ?? item.output,
+                CAPTURE_COMMAND_OUTPUT_LIMIT,
+                true,
+            ),
+        }
+    }
+    if (["mcpToolCall", "dynamicToolCall", "collabAgentToolCall"].includes(item?.type)) {
+        return {
+            ...base,
+            server: item.server ?? null,
+            tool: item.tool ?? null,
+            status: item.status ?? null,
+            durationMs: item.durationMs ?? null,
+            arguments: boundedCaptureValue(item.arguments),
+            result: boundedCaptureValue(item.result),
+            error: boundedCaptureValue(item.error),
+        }
+    }
+    return {
+        ...boundedCaptureValue(item),
+        ...base,
+    }
+}
+
+function compactCaptureTurn(turn) {
+    return {
+        ...turn,
+        items: Array.isArray(turn?.items) ? turn.items.map(compactCaptureItem) : [],
+    }
+}
+
+function turnHasUserItem(turn, itemId) {
+    return Boolean(itemId) && (turn?.items ?? []).some((item) => (
+        item?.type === "userMessage" && item?.id === itemId
+    ))
+}
+
+function capturePaginationUnavailable(error) {
+    return error?.code === -32601 || /(?:invalid paginated history lineage|not supported yet|method not found|unknown method)/iu.test(
+        String(error?.message ?? ""),
+    )
+}
+
+function boundedCaptureTurns(turns, {anchorItemId = null, limit}) {
+    const descending = [...turns].reverse()
+    const selected = []
+    let anchorFound = false
+    for (const turn of descending) {
+        selected.push(compactCaptureTurn(turn))
+        if (turnHasUserItem(turn, anchorItemId)) {
+            anchorFound = true
+            break
+        }
+        if (selected.length >= limit) break
+    }
+    return {
+        turns: selected.reverse(),
+        anchorFound,
+        truncated: !anchorFound && selected.length < descending.length,
+    }
 }
 
 function turnSandboxPolicy(sandbox) {
@@ -587,6 +735,67 @@ class CodexAppServerClient extends EventEmitter {
 
     readThread(threadId) {
         return this.request("thread/read", {threadId, includeTurns: true})
+    }
+
+    async readThreadForCapture(threadId, options = {}) {
+        const metadata = await this.request("thread/read", {threadId, includeTurns: false})
+        const anchorItemId = options.pendingStartUserItemId ?? options.afterUserItemId ?? null
+        const turnLimit = anchorItemId
+            ? CAPTURE_INCREMENTAL_TURN_LIMIT
+            : CAPTURE_INITIAL_TURN_LIMIT
+        const turns = []
+        const seenCursors = new Set()
+        let cursor = null
+        let anchorFound = false
+        let exhausted = false
+        try {
+            while (turns.length < turnLimit) {
+                const page = await this.request("thread/turns/list", {
+                    threadId,
+                    ...(cursor ? {cursor} : {}),
+                    limit: CAPTURE_TURN_PAGE_SIZE,
+                    sortDirection: "desc",
+                    itemsView: "full",
+                })
+                for (const turn of page?.data ?? []) {
+                    turns.push(compactCaptureTurn(turn))
+                    if (turnHasUserItem(turn, anchorItemId)) {
+                        anchorFound = true
+                        break
+                    }
+                    if (turns.length >= turnLimit) break
+                }
+                if (anchorFound) break
+                const nextCursor = page?.nextCursor ?? null
+                if (!nextCursor || seenCursors.has(nextCursor)) {
+                    exhausted = true
+                    break
+                }
+                seenCursors.add(nextCursor)
+                cursor = nextCursor
+            }
+            return {
+                ...metadata,
+                thread: {...metadata.thread, turns: turns.reverse()},
+                history: {
+                    mode: "paginated",
+                    anchorFound,
+                    truncated: !anchorFound && !exhausted,
+                },
+            }
+        } catch (error) {
+            if (!capturePaginationUnavailable(error)) throw error
+            const legacy = await this.request("thread/read", {threadId, includeTurns: true})
+            const bounded = boundedCaptureTurns(legacy?.thread?.turns ?? [], {
+                anchorItemId,
+                limit: turnLimit,
+            })
+            return {
+                ...legacy,
+                thread: {...metadata.thread, ...legacy.thread, turns: bounded.turns},
+                history: {mode: "legacy-fallback", ...bounded},
+            }
+        }
     }
 
     setThreadName(threadId, name) {

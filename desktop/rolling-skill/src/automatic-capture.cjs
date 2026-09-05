@@ -465,7 +465,15 @@ class ConversationDiscoveryManager {
 
     async runSlot(slot, profile = this.profile(), {complete = true} = {}) {
         this.stateStore.beginSlot(slot, this.now())
-        this.progress = {stage: "listing", startedAt: this.now().toISOString(), totalThreads: 0, completedThreads: 0, analysisCount: 0}
+        this.progress = {
+            stage: "listing",
+            startedAt: this.now().toISOString(),
+            totalThreads: 0,
+            completedThreads: 0,
+            failedThreads: 0,
+            threadErrors: [],
+            analysisCount: 0,
+        }
         this.emitStatus()
         const targets = arrays(profile.targets)
         if (!targets.length) throw new Error(AUTOMATIC_TARGET_SCOPE_ERROR)
@@ -501,21 +509,39 @@ class ConversationDiscoveryManager {
             this.emitStatus()
             const sourceRevision = typeof summary.sourceRevision === "string" ? summary.sourceRevision : null
             const cursor = this.stateStore.thread(runtimeId, summary.id)
-            if (!sourceRevision || cursor.sourceRevision !== sourceRevision) {
-                await this.scanThread({
-                    runtime,
-                    runtimeId,
+            try {
+                if (!sourceRevision || cursor.sourceRevision !== sourceRevision) {
+                    await this.scanThread({
+                        runtime,
+                        runtimeId,
+                        threadId: summary.id,
+                        skills: scopedSkills,
+                        datasets: scopedDatasets,
+                        profile,
+                    })
+                    // Only checkpoint a fully successful read/inspection. A failed
+                    // history request or Curator dispatch must remain retryable.
+                    if (sourceRevision) this.stateStore.commitThread(runtimeId, summary.id, {sourceRevision}, this.now())
+                }
+            } catch (error) {
+                const failure = error instanceof Error
+                    ? error
+                    : new Error(String(error ?? "Automatic capture source task failed"))
+                this.progress.failedThreads += 1
+                this.progress.threadErrors.push({
                     threadId: summary.id,
-                    skills: scopedSkills,
-                    datasets: scopedDatasets,
-                    profile,
+                    message: failure.message.slice(0, 500),
                 })
-                // Only checkpoint a fully successful read/inspection. A failed
-                // history request or Curator dispatch must remain retryable.
-                if (sourceRevision) this.stateStore.commitThread(runtimeId, summary.id, {sourceRevision}, this.now())
+                this.progress.threadErrors = this.progress.threadErrors.slice(-20)
+                this.onError(failure)
             }
             this.progress.completedThreads += 1
             this.emitStatus()
+        }
+        if (visibleThreads.length && this.progress.failedThreads === visibleThreads.length) {
+            throw new Error(
+                `Automatic capture could not inspect any source tasks: ${this.progress.threadErrors[0]?.message ?? "unknown error"}`,
+            )
         }
         if (complete && this.waitForCurationOnScan) {
             this.progress.stage = "curating"
@@ -821,12 +847,17 @@ The previous boundary result was rejected: ${reason}. Return corrected JSON only
     }
 
     async scanThread({runtime, runtimeId, threadId, skills, datasets, profile}) {
-        const response = await runtime.readThread(threadId)
+        const cursor = this.stateStore.thread(runtimeId, threadId)
+        const response = typeof runtime.readThreadForCapture === "function"
+            ? await runtime.readThreadForCapture(threadId, {
+                  afterUserItemId: cursor.lastInspectedUserItemId,
+                  pendingStartUserItemId: cursor.pendingStartUserItemId,
+              })
+            : await runtime.readThread(threadId)
         const thread = response?.thread
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`)
         const messages = this.userMessages(thread)
         if (!messages.length) return false
-        const cursor = this.stateStore.thread(runtimeId, threadId)
         if (isAutomaticAnalysisTask(messages)) {
             this.rememberAnalysisThread(threadId)
             if (

@@ -16,7 +16,7 @@
 - Modify: `desktop/rolling-skill/src/trace-recorder.cjs`
 - Test: `desktop/rolling-skill/test/trace-recorder.test.cjs`
 
-- [ ] **Step 1: Write the failing no-whole-file-read test**
+- [x] **Step 1: Write the failing no-whole-file-read test**
 
 Load `trace-recorder.cjs` with `node:fs.readFileSync` temporarily replaced by a function that throws,
 then verify `evidenceForReference()`, `readRecent()`, and `referenceForEpisode()` still work on a
@@ -28,13 +28,13 @@ assert.deepEqual(recorder.readRecent(1).map((entry) => entry.sequence), [3])
 assert.equal(recorder.referenceForEpisode(range), "trace://streaming.jsonl#L1-L3")
 ```
 
-- [ ] **Step 2: Run the focused test and confirm RED**
+- [x] **Step 2: Run the focused test and confirm RED**
 
 Run: `node --test test/trace-recorder.test.cjs`
 
 Expected: FAIL because one of the public readers calls `readFileSync(this.path, "utf8")`.
 
-- [ ] **Step 3: Implement a bounded synchronous JSONL iterator**
+- [x] **Step 3: Implement a bounded synchronous JSONL iterator**
 
 Use `openSync`, `readSync`, and a fixed `Buffer` to yield complete lines without retaining the
 whole file. Add helpers equivalent to:
@@ -49,7 +49,7 @@ function *jsonLines(path, {start = 1, end = Infinity} = {}) {
 Refactor all three public readers to retain only the data they need: the requested evidence range,
 a fixed recent tail, or matching episode line numbers.
 
-- [ ] **Step 4: Run the focused test and confirm GREEN**
+- [x] **Step 4: Run the focused test and confirm GREEN**
 
 Run: `node --test test/trace-recorder.test.cjs`
 
@@ -61,7 +61,7 @@ Expected: all trace-recorder tests pass with no sentinel `readFileSync` call.
 - Modify: `desktop/rolling-skill/src/trace-recorder.cjs`
 - Test: `desktop/rolling-skill/test/trace-recorder.test.cjs`
 
-- [ ] **Step 1: Write the failing history-payload test**
+- [x] **Step 1: Write the failing history-payload test**
 
 Record an outbound `thread/read`, then an inbound response containing a very large tool result.
 Assert the JSONL does not contain that result text, while `threadId`, turn ID, and item IDs remain
@@ -73,13 +73,13 @@ assert.match(traceText, /user-1/u)
 assert.match(traceText, /answer-1/u)
 ```
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 Run: `node --test test/trace-recorder.test.cjs`
 
 Expected: FAIL because the current recorder serializes the complete inbound history response.
 
-- [ ] **Step 3: Add request-aware trace compaction**
+- [x] **Step 3: Add request-aware trace compaction**
 
 Track outbound request method by JSON-RPC ID. Before constructing the trace entry, make a detached
 compact copy only for inbound responses to `thread/read` and `thread/turns/list`:
@@ -102,7 +102,7 @@ compact copy only for inbound responses to `thread/read` and `thread/turns/list`
 
 Preserve page cursors and never mutate the response object supplied to the RPC caller.
 
-- [ ] **Step 4: Run trace tests and confirm GREEN**
+- [x] **Step 4: Run trace tests and confirm GREEN**
 
 Run: `node --test test/trace-recorder.test.cjs`
 
@@ -114,7 +114,7 @@ Expected: all tests pass and the oversized payload is absent from disk.
 - Modify: `desktop/rolling-skill/src/codex-app-server.cjs`
 - Test: `desktop/rolling-skill/test/codex-app-server.integration.test.cjs`
 
-- [ ] **Step 1: Write failing request-construction tests**
+- [x] **Step 1: Write failing request-construction tests**
 
 Stub `client.request()` with metadata and descending paginated turn responses. Verify the desired
 API stops after finding the persisted anchor, returns chronological turns, immediately compacts
@@ -133,13 +133,13 @@ assert.deepEqual(requests.map(({method}) => method), [
 assert.equal(result.thread.turns[0].id, "older-turn")
 ```
 
-- [ ] **Step 2: Run the Codex client test and confirm RED**
+- [x] **Step 2: Run the Codex client test and confirm RED**
 
 Run: `node --test test/codex-app-server.integration.test.cjs`
 
 Expected: FAIL because `readThreadForCapture` does not exist.
 
-- [ ] **Step 3: Implement capture history paging and compaction**
+- [x] **Step 3: Implement capture history paging and compaction**
 
 Add fixed internal limits for turn page size, initial recent turns, maximum collected turns, and
 bounded item fields. Request metadata without turns, page `thread/turns/list` using
@@ -150,7 +150,7 @@ If pagination returns the known invalid-lineage/not-supported protocol errors, c
 full-history method once, keep only the bounded recent/anchor range, and compact before returning.
 Other errors remain visible to the caller.
 
-- [ ] **Step 4: Run Codex client tests and confirm GREEN**
+- [x] **Step 4: Run Codex client tests and confirm GREEN**
 
 Run: `node --test test/codex-app-server.integration.test.cjs`
 
@@ -162,7 +162,7 @@ Expected: all tests pass.
 - Modify: `desktop/rolling-skill/src/automatic-capture.cjs`
 - Test: `desktop/rolling-skill/test/automatic-capture.test.cjs`
 
-- [ ] **Step 1: Write failing Automatic Capture tests**
+- [x] **Step 1: Write failing Automatic Capture tests**
 
 Add one test proving `scanThread()` calls `readThreadForCapture()` with both persisted anchors and
 does not call legacy `readThread()`. Add another with two listed source threads where the first
@@ -177,20 +177,20 @@ assert.deepEqual(captureReads[0], {
 assert.deepEqual(successfulReads, ["thread-2"])
 ```
 
-- [ ] **Step 2: Run Automatic Capture tests and confirm RED**
+- [x] **Step 2: Run Automatic Capture tests and confirm RED**
 
 Run: `node --test test/automatic-capture.test.cjs`
 
 Expected: FAIL because the manager only calls `readThread()` and aborts the slot on the first error.
 
-- [ ] **Step 3: Implement manager integration**
+- [x] **Step 3: Implement manager integration**
 
 Read the thread cursor before history hydration, prefer `runtime.readThreadForCapture()` when
 available, and pass inspected/pending anchors. Wrap each `scanThread()` call in the existing source
 thread loop with a per-thread `try/catch`; call `onError`, record a compact failed-thread summary in
 progress, leave its cursor unchanged, and continue. Keep configuration/runtime-wide failures fatal.
 
-- [ ] **Step 4: Run Automatic Capture tests and confirm GREEN**
+- [x] **Step 4: Run Automatic Capture tests and confirm GREEN**
 
 Run: `node --test test/automatic-capture.test.cjs`
 
@@ -204,13 +204,13 @@ Expected: all tests pass and the second source thread is inspected after the fir
 - Modify: `docs/superpowers/plans/2026-09-06-automatic-capture-bounded-history.md`
 - Modify outside target repository: agent project record files
 
-- [ ] **Step 1: Rebuild bundled consumers**
+- [x] **Step 1: Rebuild bundled consumers**
 
 Run: `npm run build:dsh`
 
 Expected: esbuild succeeds and the generated DSH bundles contain the updated shared modules.
 
-- [ ] **Step 2: Run focused and full verification**
+- [x] **Step 2: Run focused and full verification**
 
 Run:
 
@@ -227,28 +227,27 @@ git diff --check
 
 Expected: zero failures, renderer errors, build errors, and whitespace errors.
 
-- [ ] **Step 3: Reproduce the historical failure safely**
+- [x] **Step 3: Reproduce the historical failure safely**
 
 Use a temporary trace containing enough aggregate data to exceed the configured test threshold and
 verify evidence collection remains bounded. Probe the installed local Codex app-server with the
 capture-specific reader against the previously failing long thread and assert the returned history
 and new trace stay within the fixed bounds.
 
-- [ ] **Step 4: Package and install the macOS app**
+- [x] **Step 4: Package and install the macOS app**
 
 Run `bash desktop/rolling-skill/scripts/build-macos-app.sh`, replace
 `/Applications/Rolling Skill.app` using the existing recoverable backup workflow, verify the local
 development signature, launch it, and confirm the main process remains alive.
 
-- [ ] **Step 5: Commit and push only intended files**
+- [x] **Step 5: Commit and push only intended files**
 
 Explicitly stage source, tests, generated bundles, spec, and plan. Verify no
 `rolling-skill-dsh-plugin-*.tgz` appears in the staged list, then commit and push `main` to
 `rolling-skill`.
 
-- [ ] **Step 6: Append the final project record**
+- [x] **Step 6: Append the final project record**
 
 Append final verification and `final_commit_id` for requirement
 `20260906-0012-automatic-capture-large-trace`, update concise module onboarding only if the bounded
 history/trace constraint is not already captured, then commit and push the external record repo.
-
