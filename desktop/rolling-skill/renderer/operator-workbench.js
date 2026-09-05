@@ -44,10 +44,27 @@
         return {}
     }
 
-    function operatorJobTitle(snapshot) {
-        const configuredTitle = operatorSessionConfiguration(snapshot).title
+    function operatorJobTitle(snapshot, managedSkills = []) {
+        const configuration = operatorSessionConfiguration(snapshot)
+        const configuredTitle = configuration.title
         if (typeof configuredTitle === "string" && configuredTitle.trim()) {
-            return configuredTitle.trim()
+            const title = configuredTitle.trim()
+            const skillIds = Array.isArray(configuration.scopes?.skillIds)
+                ? configuration.scopes.skillIds
+                : []
+            const skillId = configuration.managedSkillBinding?.skillId ?? (
+                skillIds.length === 1 ? skillIds[0] : null
+            )
+            const skillName = Array.isArray(managedSkills)
+                ? String(managedSkills.find((skill) => skill?.id === skillId)?.name ?? "").trim()
+                : ""
+            if (skillName && /^Skill 自动优化 · \. · /u.test(title)) {
+                return title.replace(
+                    /^Skill 自动优化 · \. · /u,
+                    `Skill 自动优化 · ${skillName} · `,
+                )
+            }
+            return title
         }
         const objective = snapshot?.job?.objective
         if (typeof objective === "string" && objective.trim()) return objective.trim()
@@ -2499,7 +2516,10 @@
                 const node_ = ensureJobNode(jobId)
                 retained.add(jobId)
                 node_.classList.toggle("active", jobId === state.activeJobId && !creating)
-                node_.querySelector(".operator-job-title").textContent = operatorJobTitle(snapshot)
+                node_.querySelector(".operator-job-title").textContent = operatorJobTitle(
+                    snapshot,
+                    catalogs.skills,
+                )
                 node_.querySelector(".operator-job-meta").textContent = jobStatusText(snapshot.job.status)
                 const unread = Object.values(snapshot.unread).reduce((sum, value) => sum + value, 0)
                 const badge = node_.querySelector(".operator-job-unread")
@@ -2689,7 +2709,7 @@
             activeOptimizationRunId = snapshot.job.optimizationRunId ?? null
             renderOptimizationPanel(optimizationRunForSnapshot(snapshot))
             if (activeOptimizationRunId) scheduleOptimizationPoll(0)
-            selectors.sessionTitle.textContent = operatorJobTitle(snapshot)
+            selectors.sessionTitle.textContent = operatorJobTitle(snapshot, catalogs.skills)
             selectors.sessionState.textContent = jobStatusText(snapshot.job.status)
             renderSessionActions(snapshot)
             patchStatus(snapshot)

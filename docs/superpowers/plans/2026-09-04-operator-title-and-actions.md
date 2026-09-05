@@ -28,7 +28,7 @@ Expected: FAIL because `operatorJobTitle` is not exported or defined.
 
 - [ ] **Step 3: Implement one renderer title selector**
 
-Add `operatorJobTitle(snapshot)` that searches configuration entries from newest to oldest, accepts both flattened and nested configuration payloads, trims a non-empty title, and falls back to objective then id. Export it and replace both direct `snapshot.job.objective || ...` render sites.
+Add `operatorJobTitle(snapshot, managedSkills)` that searches configuration entries from newest to oldest, accepts both flattened and nested configuration payloads, resolves legacy root-Skill titles containing `.` by stable Skill id, trims a non-empty title, and falls back to objective then id. Export it and replace both direct `snapshot.job.objective || ...` render sites.
 
 - [ ] **Step 4: Run the focused test and verify GREEN**
 

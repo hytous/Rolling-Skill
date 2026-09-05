@@ -95,6 +95,16 @@ describe("Operator workbench state", () => {
             }],
         }), "Nested compatibility title")
         assert.equal(operatorJobTitle({
+            job: {id: "job-existing", objective: "Optimize frozen Run 2d5d5f00."},
+            transcript: [{
+                kind: "operator_session_configuration",
+                title: "Skill 自动优化 · . · 2d5d5f00",
+                managedSkillBinding: {skillId: "skill-billing"},
+            }],
+        }, [{id: "skill-billing", name: "billing-cost-management"}]), (
+            "Skill 自动优化 · billing-cost-management · 2d5d5f00"
+        ))
+        assert.equal(operatorJobTitle({
             job: {id: "job-legacy", objective: "Legacy objective"},
             transcript: [],
         }), "Legacy objective")

@@ -24,6 +24,8 @@
 
 左侧任务列表和中间会话标题都只调用该函数，从而避免两个位置再次分叉。
 
+对于已经持久化为 `Skill 自动优化 · . · <run>` 的旧根目录 Skill 任务，渲染器按稳定 `skillId` 从受管 Skill 目录解析真实名称，只修正展示文本而不改写运行中的任务状态。
+
 优化冻结快照的 baseline 增加可选 `skillName`。预检从受管 Skill 记录读取真实名称并写入可信冻结数据；`optimizationTaskTitle(run)` 优先使用它，再回退到非 `.` 的 skillRoot 末段和 skillId。字段保持可选，以兼容已有 v1/v2 快照。
 
 ### 按钮视觉

@@ -418,7 +418,7 @@ function createOperatorFixture() {
                 })
                 store.appendSessionTranscript(session.id, {
                     kind: "operator_session_configuration",
-                    title: "Skill 自动优化 · billing-cost-management · optimization",
+                    title: "Skill 自动优化 · . · optimization",
                     scopes: {
                         skillIds: ["managed-skill-smoke-two"],
                         datasetIds: ["optimization-dataset-smoke"],
@@ -2050,7 +2050,7 @@ async function run() {
         throw new Error(`Optimization Start did not expose its pending state: ${JSON.stringify(optimizationStarting)}`)
     }
     try {
-        await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Skill 自动优化 · billing-cost-management · optimization"))')
+        await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Skill 自动优化 · billing-cost-analysis · optimization"))')
     } catch (error) {
         const diagnostic = await inspect(window, `(() => ({
             setupError: document.querySelector("#operator-setup-error").textContent,
@@ -2070,7 +2070,7 @@ async function run() {
         throw new Error(`Optimization Start call count changed: ${optimizationStartCalls}`)
     }
     const optimizationJobId = await inspect(window, `[...document.querySelectorAll("[data-operator-job-id]")]
-        .find((node) => node.textContent.includes("Skill 自动优化 · billing-cost-management · optimization"))?.dataset.operatorJobId`)
+        .find((node) => node.textContent.includes("Skill 自动优化 · billing-cost-analysis · optimization"))?.dataset.operatorJobId`)
     const optimizationJobSelector = `[data-operator-job-id="${optimizationJobId}"]`
     try {
         await waitFor(window, `document.querySelector(${JSON.stringify(`${optimizationJobSelector}.active`)}) && !document.querySelector("#operator-optimization-panel").classList.contains("hidden")`)
@@ -2101,8 +2101,8 @@ async function run() {
         ].map((button) => button?.className ?? null),
     }))()`)
     if (
-        optimizationChrome.listTitle !== "Skill 自动优化 · billing-cost-management · optimization" ||
-        optimizationChrome.sessionTitle !== "Skill 自动优化 · billing-cost-management · optimization" ||
+        optimizationChrome.listTitle !== "Skill 自动优化 · billing-cost-analysis · optimization" ||
+        optimizationChrome.sessionTitle !== "Skill 自动优化 · billing-cost-analysis · optimization" ||
         optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
         !optimizationChrome.actions[0].includes("primary") ||
         !optimizationChrome.actions[2].includes("operator-action-danger")
