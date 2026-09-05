@@ -84,3 +84,16 @@
 - [x] Commit and push `main` to `rolling-skill`.
 - [x] Synchronize the identical source tree to `git@github.com:hytous/Rolling-Skill.git` without force-pushing.
 - [x] Commit and push the final project record.
+
+### Task 7: Remove false-positive Skill evidence blocking
+
+**Files:**
+- Modify: `desktop/rolling-skill/src/evaluation-skill-evidence.cjs`
+- Modify: `desktop/rolling-skill/test/evaluation-skill-evidence.test.cjs`
+- Modify: `desktop/rolling-skill/test/optimization-evaluation-binding.test.cjs`
+
+- [x] Add local and managed evidence regressions proving a generated `.md` output name is not treated as a missing Skill reference.
+- [x] Keep explicit Markdown links strict while following plain-text `.md` references only when the file exists.
+- [x] Re-run the exact failed Candidate evidence snapshot and confirm it has no warning or truncation.
+- [x] Re-run full tests, builds, renderer smoke, packaging, signing, and installed-App checks.
+- [x] Commit and synchronize the final source tree to both remotes without staging package archives.

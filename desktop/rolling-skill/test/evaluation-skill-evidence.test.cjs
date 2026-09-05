@@ -46,7 +46,10 @@ describe("evaluation Skill evidence snapshot", () => {
             "| Task | Required file |\n| --- | --- |\n| Billing | `references/query_routing.md` |\nInstall via `DEPENDENCIES.md`.",
         )
         writeFileSync(join(root, "DEPENDENCIES.md"), "Install the billing CLI.")
-        writeFileSync(join(root, "references/query_routing.md"), "Read `glossary.md` first.")
+        writeFileSync(
+            join(root, "references/query_routing.md"),
+            "Read `glossary.md` first. Write the generated report to `cloud_cost_report.md`.",
+        )
         writeFileSync(join(root, "references/glossary.md"), "Definitions.")
 
         const snapshot = snapshotSkillEvidence({name: "billing", path: join(root, "SKILL.md")})
@@ -72,6 +75,17 @@ describe("evaluation Skill evidence snapshot", () => {
 
         assert.deepEqual(snapshot.files.map((entry) => entry.id), ["skill:SKILL.md"])
         assert.equal(snapshot.warnings.length, 1)
+    })
+
+    it("keeps an explicit missing Markdown link as incomplete evidence", () => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-evidence-"))
+        temporaryDirectories.push(root)
+        writeFileSync(join(root, "SKILL.md"), "Read [required](references/missing.md).")
+
+        const snapshot = snapshotSkillEvidence({name: "safe", path: join(root, "SKILL.md")})
+
+        assert.deepEqual(snapshot.files.map((entry) => entry.id), ["skill:SKILL.md"])
+        assert.match(snapshot.warnings[0], /missing\.md|no such file/iu)
     })
 
     it("rejects a selected SKILL.md symlink that escapes its selected directory", () => {

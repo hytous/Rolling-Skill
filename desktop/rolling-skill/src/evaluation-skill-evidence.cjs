@@ -65,7 +65,7 @@ function resolveManagedLinkedPath(available, currentLogicalPath, linkedPath) {
 }
 
 function linkedLocalPaths(markdown) {
-    const paths = new Set()
+    const paths = new Map()
     const pattern = /!?(?:\[[^\]]*\])\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/gu
     for (const match of String(markdown).matchAll(pattern)) {
         const value = String(match[1] ?? match[2] ?? "").trim()
@@ -77,14 +77,14 @@ function linkedLocalPaths(markdown) {
             // Keep the literal path so it can produce a bounded warning.
         }
         const withoutFragment = decoded.split("#", 1)[0].split("?", 1)[0]
-        if (withoutFragment) paths.add(withoutFragment)
+        if (withoutFragment) paths.set(withoutFragment, true)
     }
     const pathTextPattern = /(?:^|[\s`'"(（|])((?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.md)(?=$|[\s`'"),，。；;：:|#])/gmu
     for (const match of String(markdown).matchAll(pathTextPattern)) {
         const value = String(match[1] ?? "").trim()
-        if (value && !isAbsolute(value)) paths.add(value)
+        if (value && !isAbsolute(value) && !paths.has(value)) paths.set(value, false)
     }
-    return [...paths]
+    return [...paths].map(([path, required]) => ({path, required}))
 }
 
 function validateSkillEvidence(value, {expectedName = null, requireComplete = false} = {}) {
@@ -207,12 +207,14 @@ function snapshotSkillEvidence(skillReference, options = {}) {
             digest: sha256(buffer),
         })
 
-        for (const linkedPath of linkedLocalPaths(content)) {
+        for (const link of linkedLocalPaths(content)) {
+            const linkedPath = link.path
             const lexicalTarget = resolveLinkedPath(root, current.logicalPath, linkedPath)
             if (!inside(root, lexicalTarget)) {
                 warnings.push(`Skipped ${linkedPath}: linked path leaves the Skill directory`)
                 continue
             }
+            if (!link.required && !existsSync(lexicalTarget)) continue
             const logicalPath = relative(root, lexicalTarget).split(sep).join("/")
             if (!visited.has(logicalPath)) queue.push({logicalPath, absolutePath: lexicalTarget})
         }
@@ -317,8 +319,10 @@ async function snapshotManagedSkillEvidence(source = {}, options = {}) {
             bytes: buffer.length,
             digest: sha256(buffer),
         })
-        for (const linkedPath of linkedLocalPaths(content)) {
+        for (const link of linkedLocalPaths(content)) {
+            const linkedPath = link.path
             const next = resolveManagedLinkedPath(available, logicalPath, linkedPath)
+            if (!link.required && !available.has(next)) continue
             if (next && !next.startsWith("../") && !visited.has(next)) queue.push(next)
         }
     }

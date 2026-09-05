@@ -49,7 +49,7 @@ function commitManagedSkill() {
     )
     writeFileSync(
         join(repositoryPath, "skills", "billing", "references", "workflow.md"),
-        "Use the immutable Candidate workflow.\n",
+        "Use the immutable Candidate workflow. Write output to `cloud_cost_report.md`.\n",
     )
     git(repositoryPath, "init", "-q")
     git(repositoryPath, "config", "user.name", "Test")
@@ -186,6 +186,7 @@ describe("Optimization Evaluation managed Candidate binding", () => {
             "SKILL.md",
             "references/workflow.md",
         ])
+        assert.deepEqual(evidence.warnings, [])
         assert.equal(evidence.managedSource.commit, source.commit)
         assert.equal(evidence.managedSource.contentDigest, source.contentDigest)
     })
