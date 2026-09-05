@@ -250,7 +250,7 @@ Tool 输出、子 Job 完成和安装/评测状态只作为当前阶段的事实
 
 ## 共享实现边界
 
-在 `packages/rolling-skill-core` 中建立唯一来源：
+在 Desktop Optimization domain 中建立可被 App 直接打包、也可被 `packages/rolling-skill-core` 复用的唯一来源；Core 保留稳定的转发入口，DSH 构建时将同一实现打入插件：
 
 - Playbook 注册表与摘要校验；
 - 任务级上下文构造器；
@@ -259,7 +259,7 @@ Tool 输出、子 Job 完成和安装/评测状态只作为当前阶段的事实
 - 有界评测证据投影；
 - 用户方向归一化和展示语义。
 
-Desktop App 删除 `main.cjs` 中单独拼接的简短优化消息，改为调用 Core。DSH 也只调用 Core，不复制方法论正文或提示模板。Core 返回结构化消息部分，Runtime Adapter负责映射到它支持的高优先级环境上下文、用户输入和普通阶段消息。
+Desktop App 删除 `main.cjs` 中单独拼接的简短优化消息，改为调用共享 Optimization domain。DSH 通过 Core 的稳定转发入口调用同一实现，不复制方法论正文或提示模板。共享实现返回结构化消息部分，Runtime Adapter负责映射到它支持的高优先级环境上下文、用户输入和普通阶段消息。
 
 ## 完整数据流
 
