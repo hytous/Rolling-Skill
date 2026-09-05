@@ -557,7 +557,25 @@ const compactOptimizationConfigInput = z.object({
     }
 })
 
+const optimizationConfigV3Input = z.object({
+    skillId: id,
+    baselineVersionId: id,
+    datasetId: id,
+    operator: optimizationRuntime,
+    targets: z.array(optimizationRuntime).min(1).max(64),
+    judge: optimizationRuntime,
+    activationMode: z.enum(["automatic", "explicit"]),
+    limits: compactOptimizationLimits,
+    optimizationDirection: z.string().max(8_000).nullable(),
+}).strict().superRefine((input, context) => {
+    const runtimeIds = input.targets.map((target) => target.runtimeId)
+    if (new Set(runtimeIds).size !== runtimeIds.length) {
+        context.addIssue({code: "custom", path: ["targets"], message: "Runtime ids must be unique"})
+    }
+})
+
 const optimizationConfigWithIdempotencyInput = z.union([
+    optimizationConfigV3Input.extend({idempotencyKey: id}).strict(),
     compactOptimizationConfigInput.extend({idempotencyKey: id}).strict(),
     legacyOptimizationConfigInput.extend({idempotencyKey: id}).strict(),
 ])
@@ -591,6 +609,12 @@ const publicOptimizationRubric = z.object({
     id,
     version: z.number().int().min(1),
     digest: boundedText(80, "Optimization Rubric digest").optional(),
+}).strict()
+
+const publicOptimizationPlaybook = z.object({
+    id: boundedText(200, "Optimization Playbook id"),
+    version: z.number().int().positive(),
+    digest: boundedText(80, "Optimization Playbook digest"),
 }).strict()
 
 const publicOptimizationCandidate = z.object({
@@ -699,6 +723,11 @@ const publicOptimizationRunBase = z.object({
 const publicOptimizationRun = z.union([
     publicOptimizationRunBase.extend({
         limits: compactOptimizationLimits,
+        optimizationDirection: z.string().max(8_000).nullable(),
+        playbook: publicOptimizationPlaybook,
+    }).strict(),
+    publicOptimizationRunBase.extend({
+        limits: compactOptimizationLimits,
     }).strict(),
     publicOptimizationRunBase.extend({
         mode: z.enum(["fixed", "adaptive"]),
@@ -709,14 +738,22 @@ const publicOptimizationRun = z.union([
     }).strict(),
 ])
 
-const publicOptimizationPreflight = z.object({
+const publicOptimizationPreflightBase = z.object({
     snapshotDigest: boundedText(80, "Optimization snapshot digest"),
     baseline: publicOptimizationBaseline,
     dataset: publicOptimizationDataset,
     rubric: publicOptimizationRubric,
     targets: z.array(optimizationRuntime).min(1).max(64),
     ready: z.boolean(),
-}).strict()
+})
+
+const publicOptimizationPreflight = z.union([
+    publicOptimizationPreflightBase.extend({
+        optimizationDirection: z.string().max(8_000).nullable(),
+        playbook: publicOptimizationPlaybook,
+    }).strict(),
+    publicOptimizationPreflightBase.strict(),
+])
 
 const OPERATOR_UI_ONLY_METHODS = new Set([
     "approvals.resolve",

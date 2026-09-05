@@ -1,9 +1,11 @@
 "use strict"
 
 const {
+    FROZEN_OPTIMIZATION_RUN_SCHEMA,
     freezeOptimizationRun,
     parseOptimizationConfig,
 } = require("./optimization-contract.cjs")
+const {currentOptimizationPlaybook} = require("./optimization-playbook.cjs")
 const {generateOptimizationReport, persistOptimizationReport} = require("./optimization-report.cjs")
 
 const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
@@ -240,6 +242,7 @@ function publicEpoch(epoch, readArtifact) {
 function publicRun(run, readArtifact = () => null) {
     const snapshot = run.snapshot ?? {}
     const legacy = snapshot.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
+    const v3 = snapshot.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
     return {
         id: run.id,
         state: run.state,
@@ -270,6 +273,14 @@ function publicRun(run, readArtifact = () => null) {
         judge: structuredClone(snapshot.judge),
         activationMode: snapshot.activationMode,
         limits: structuredClone(snapshot.limits),
+        ...(v3 ? {
+            optimizationDirection: snapshot.optimizationDirection,
+            playbook: {
+                id: snapshot.playbook?.id,
+                version: snapshot.playbook?.version,
+                digest: snapshot.playbook?.digest,
+            },
+        } : {}),
         ...(legacy ? {
             mode: snapshot.mode,
             target: structuredClone(snapshot.target),
@@ -303,6 +314,10 @@ function publicPreflight(snapshot) {
         dataset: run.dataset,
         rubric: run.rubric,
         targets: run.targets,
+        ...(run.playbook ? {
+            optimizationDirection: run.optimizationDirection,
+            playbook: run.playbook,
+        } : {}),
         ready: true,
     }
 }
@@ -358,6 +373,9 @@ class OptimizationControlService {
         return this.freezeRun({
             trusted: structuredClone(trusted),
             config: normalized,
+            ...(Object.hasOwn(normalized, "optimizationDirection")
+                ? {playbook: currentOptimizationPlaybook()}
+                : {}),
             createdAt: this.clock(),
         })
     }

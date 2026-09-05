@@ -2,12 +2,15 @@ const {createHash} = require("node:crypto")
 const {isAbsolute} = require("node:path")
 
 const {validateSkillEvidence} = require("../evaluation-skill-evidence.cjs")
+const {validateOptimizationPlaybook} = require("./optimization-playbook.cjs")
 
 const LEGACY_OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v1"
-const OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v2"
+const COMPACT_OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v2"
+const OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v3"
 const OPTIMIZATION_DECISION_SCHEMA = "rolling-skill-optimization-decision/v1"
 const LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1"
-const FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v2"
+const COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v2"
+const FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v3"
 const MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1_000
 const MAX_DECISION_BYTES = 64 * 1024
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
@@ -105,6 +108,18 @@ function requiredText(value, label, maxLength = 300) {
 function nullableText(value, label, maxLength = 300) {
     if (value === undefined || value === null || value === "") return null
     return requiredText(value, label, maxLength)
+}
+
+function optimizationDirection(value) {
+    if (value === undefined || value === null) return null
+    if (typeof value !== "string") throw new Error("Optimization direction must be text or null")
+    const normalized = value.trim()
+    if (!normalized) return null
+    if (normalized.length > 8_000) throw new Error("Optimization direction is too long")
+    if (/\u0000/u.test(normalized)) {
+        throw new Error("Optimization direction contains unsupported characters")
+    }
+    return normalized
 }
 
 function timestamp(value, label) {
@@ -235,6 +250,17 @@ function telemetry(value) {
 function parseOptimizationConfig(value) {
     const source = cloneJson(value, "Optimization config")
     const legacy = ["mode", "target", "telemetry"].some((field) => Object.hasOwn(source, field))
+    const v3 = !legacy && Object.hasOwn(source, "optimizationDirection")
+    const compactFields = [
+        "skillId",
+        "baselineVersionId",
+        "datasetId",
+        "operator",
+        "targets",
+        "judge",
+        "activationMode",
+        "limits",
+    ]
     exactKeys(
         source,
         legacy ? [
@@ -249,16 +275,7 @@ function parseOptimizationConfig(value) {
             "limits",
             "target",
             "telemetry",
-        ] : [
-            "skillId",
-            "baselineVersionId",
-            "datasetId",
-            "operator",
-            "targets",
-            "judge",
-            "activationMode",
-            "limits",
-        ],
+        ] : v3 ? [...compactFields, "optimizationDirection"] : compactFields,
         [],
         "Optimization config",
     )
@@ -277,7 +294,9 @@ function parseOptimizationConfig(value) {
         throw new Error("Optimization target runtime ids must be unique")
     }
     const parsed = {
-        schemaVersion: legacy ? LEGACY_OPTIMIZATION_CONFIG_SCHEMA : OPTIMIZATION_CONFIG_SCHEMA,
+        schemaVersion: legacy
+            ? LEGACY_OPTIMIZATION_CONFIG_SCHEMA
+            : v3 ? OPTIMIZATION_CONFIG_SCHEMA : COMPACT_OPTIMIZATION_CONFIG_SCHEMA,
         skillId: requiredText(source.skillId, "Optimization Skill id", 200),
         baselineVersionId: requiredText(
             source.baselineVersionId,
@@ -290,6 +309,7 @@ function parseOptimizationConfig(value) {
         judge: runtimeSelection(source.judge, "Optimization Judge"),
         activationMode,
         limits: legacy ? legacyLimits(source.limits) : compactLimits(source.limits),
+        ...(v3 ? {optimizationDirection: optimizationDirection(source.optimizationDirection)} : {}),
         ...(legacy ? {
             mode: requiredText(source.mode, "Optimization mode", 20),
             target: target(source.target),
@@ -524,6 +544,7 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
         throw new Error("One or more Dataset Cases have stale Rubric calibration")
     }
     const legacy = config.schemaVersion === LEGACY_OPTIMIZATION_CONFIG_SCHEMA
+    const v3 = config.schemaVersion === OPTIMIZATION_CONFIG_SCHEMA
     if (legacy && config.limits.maxTokens > 0 && !config.telemetry.tokens) {
         throw new Error("A hard token budget requires token telemetry capability")
     }
@@ -533,7 +554,7 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
     return {
         schemaVersion: legacy
             ? LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
-            : FROZEN_OPTIMIZATION_RUN_SCHEMA,
+            : v3 ? FROZEN_OPTIMIZATION_RUN_SCHEMA : COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA,
         baseline,
         dataset,
         rubric,
@@ -543,6 +564,10 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
         judge: cloneJson(config.judge),
         activationMode: config.activationMode,
         limits: cloneJson(config.limits),
+        ...(v3 ? {
+            optimizationDirection: config.optimizationDirection,
+            playbook: validateOptimizationPlaybook(value.playbook),
+        } : {}),
         ...(legacy ? {
             mode: config.mode,
             target: cloneJson(config.target),
@@ -557,7 +582,7 @@ function freezeOptimizationRun(value) {
     exactKeys(
         source,
         ["baseline", "dataset", "rubric", "skillEvidence", "config", "createdAt"],
-        [],
+        ["playbook"],
         "Optimization frozen-run input",
     )
     let evidence
@@ -573,8 +598,13 @@ function freezeOptimizationRun(value) {
 function validateFrozenOptimizationRun(value) {
     const source = cloneJson(value, "Frozen optimization run")
     const legacy = source.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
-    if (!legacy && source.schemaVersion !== FROZEN_OPTIMIZATION_RUN_SCHEMA) {
-        throw new Error(`Frozen optimization run must use ${FROZEN_OPTIMIZATION_RUN_SCHEMA}`)
+    const compact = source.schemaVersion === COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA
+    const v3 = source.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
+    if (!legacy && !compact && !v3) {
+        throw new Error(
+            `Frozen optimization run must use ${LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA}, ` +
+            `${COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA}, or ${FROZEN_OPTIMIZATION_RUN_SCHEMA}`,
+        )
     }
     exactKeys(
         source,
@@ -592,6 +622,21 @@ function validateFrozenOptimizationRun(value) {
             "limits",
             "target",
             "telemetry",
+            "createdAt",
+            "digest",
+        ] : v3 ? [
+            "schemaVersion",
+            "baseline",
+            "dataset",
+            "rubric",
+            "skillEvidenceDigest",
+            "operator",
+            "targets",
+            "judge",
+            "activationMode",
+            "limits",
+            "optimizationDirection",
+            "playbook",
             "createdAt",
             "digest",
         ] : [
@@ -625,12 +670,14 @@ function validateFrozenOptimizationRun(value) {
             judge: source.judge,
             activationMode: source.activationMode,
             limits: source.limits,
+            ...(v3 ? {optimizationDirection: source.optimizationDirection} : {}),
             ...(legacy ? {
                 mode: source.mode,
                 target: source.target,
                 telemetry: source.telemetry,
             } : {}),
         },
+        ...(v3 ? {playbook: source.playbook} : {}),
         createdAt: source.createdAt,
     }, {trustedFacts: false})
     const claimedDigest = digestText(source.digest, "Frozen optimization run digest")
@@ -641,6 +688,8 @@ function validateFrozenOptimizationRun(value) {
 }
 
 module.exports = {
+    COMPACT_FROZEN_OPTIMIZATION_RUN_SCHEMA,
+    COMPACT_OPTIMIZATION_CONFIG_SCHEMA,
     FROZEN_OPTIMIZATION_RUN_SCHEMA,
     MAX_DURATION_MS,
     OPTIMIZATION_CONFIG_SCHEMA,

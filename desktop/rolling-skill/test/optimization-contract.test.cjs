@@ -7,11 +7,15 @@ const {afterEach, describe, it} = require("node:test")
 
 const {
     OPTIMIZATION_DECISION_SCHEMA,
+    canonicalOptimizationDigest,
     freezeOptimizationRun,
     parseOptimizationConfig,
     parseOptimizationDecision,
     validateFrozenOptimizationRun,
 } = require("../src/optimization/optimization-contract.cjs")
+const {currentOptimizationPlaybook} = require(
+    "../src/optimization/optimization-playbook.cjs",
+)
 const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
 
 const temporaryDirectories = []
@@ -124,6 +128,61 @@ function freezeInput(overrides = {}) {
 }
 
 describe("optimization contract", () => {
+    it("normalizes an optional optimization direction into a v3 configuration", () => {
+        const directed = parseOptimizationConfig(compactConfig({
+            optimizationDirection: "  改善异常下钻  ",
+        }))
+        const automatic = parseOptimizationConfig(compactConfig({
+            optimizationDirection: null,
+        }))
+
+        assert.equal(directed.schemaVersion, "rolling-skill-optimization-config/v3")
+        assert.equal(directed.optimizationDirection, "改善异常下钻")
+        assert.equal(automatic.optimizationDirection, null)
+        assert.throws(() => parseOptimizationConfig(compactConfig({
+            optimizationDirection: "x".repeat(8_001),
+        })), /direction.*long/i)
+    })
+
+    it("freezes the v3 direction and complete Playbook into the Run digest", () => {
+        const playbook = currentOptimizationPlaybook()
+        const directedInput = freezeInput({
+            config: compactConfig({optimizationDirection: "改善异常下钻"}),
+            playbook,
+        })
+        const directed = freezeOptimizationRun(directedInput)
+        const automatic = freezeOptimizationRun(freezeInput({
+            config: compactConfig({optimizationDirection: null}),
+            playbook,
+        }))
+        const nextPlaybookBody = {
+            id: playbook.id,
+            version: 2,
+            content: `${playbook.content}\n\nReviewed for v2.`,
+            sources: structuredClone(playbook.sources),
+        }
+        const nextPlaybook = {
+            ...nextPlaybookBody,
+            digest: canonicalOptimizationDigest(nextPlaybookBody),
+        }
+        const nextMethod = freezeOptimizationRun(freezeInput({
+            config: compactConfig({optimizationDirection: "改善异常下钻"}),
+            playbook: nextPlaybook,
+        }))
+
+        assert.equal(directed.schemaVersion, "rolling-skill-frozen-optimization-run/v3")
+        assert.equal(directed.optimizationDirection, "改善异常下钻")
+        assert.deepEqual(directed.playbook, playbook)
+        assert.equal(Object.isFrozen(directed.playbook.sources[0]), true)
+        assert.notEqual(directed.digest, automatic.digest)
+        assert.notEqual(directed.digest, nextMethod.digest)
+        assert.deepEqual(validateFrozenOptimizationRun(directed), directed)
+
+        const corrupted = structuredClone(directed)
+        corrupted.playbook.content += "\nchanged"
+        assert.throws(() => validateFrozenOptimizationRun(corrupted), /playbook.*digest|digest.*playbook/i)
+    })
+
     it("accepts a compact Epoch-only configuration without an Agent-operation ceiling", () => {
         const parsed = parseOptimizationConfig(compactConfig())
 

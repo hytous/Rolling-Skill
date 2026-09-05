@@ -10,6 +10,9 @@ const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 const {
     OptimizationControlService,
 } = require("../src/optimization/optimization-control-service.cjs")
+const {currentOptimizationPlaybook} = require(
+    "../src/optimization/optimization-playbook.cjs",
+)
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -46,12 +49,18 @@ function legacyConfig() {
     }
 }
 
-function snapshot(revision, {legacy = false} = {}) {
+function directedConfig() {
+    return {...config(), optimizationDirection: "重点改善异常下钻"}
+}
+
+function snapshot(revision, {legacy = false, directed = false, playbook = null} = {}) {
     const currentConfig = legacy ? legacyConfig() : config()
     return {
         schemaVersion: legacy
             ? "rolling-skill-frozen-optimization-run/v1"
-            : "rolling-skill-frozen-optimization-run/v2",
+            : directed
+                ? "rolling-skill-frozen-optimization-run/v3"
+                : "rolling-skill-frozen-optimization-run/v2",
         digest: digest(String(revision)),
         baseline: {
             repositoryId: "repository-1",
@@ -69,6 +78,10 @@ function snapshot(revision, {legacy = false} = {}) {
         judge: currentConfig.judge,
         activationMode: currentConfig.activationMode,
         limits: currentConfig.limits,
+        ...(directed ? {
+            optimizationDirection: "重点改善异常下钻",
+            playbook: structuredClone(playbook),
+        } : {}),
         ...(legacy ? {
             mode: currentConfig.mode,
             target: currentConfig.target,
@@ -194,10 +207,14 @@ function fixture(options = {}) {
         },
         freezeRun(input) {
             freezeCalls.push(structuredClone(input))
+            const directed = Object.hasOwn(input.config, "optimizationDirection")
             const frozen = snapshot(input.trusted.trustedRevision, {
                 legacy: Object.hasOwn(input.config, "mode"),
+                directed,
+                playbook: input.playbook,
             })
             frozen.limits = structuredClone(input.config.limits)
+            if (directed) frozen.optimizationDirection = input.config.optimizationDirection
             return frozen
         },
         clock: () => "2026-08-25T08:00:00.000Z",
@@ -235,6 +252,28 @@ function fixture(options = {}) {
 }
 
 describe("Optimization control service", () => {
+    it("freezes the current Playbook for v3 and exposes only its public identity", async () => {
+        const context = fixture()
+        const preflight = await context.service.preflight(directedConfig())
+
+        assert.deepEqual(context.freezeCalls[0].playbook, currentOptimizationPlaybook())
+        assert.equal(preflight.optimizationDirection, "重点改善异常下钻")
+        assert.deepEqual(preflight.playbook, {
+            id: currentOptimizationPlaybook().id,
+            version: currentOptimizationPlaybook().version,
+            digest: currentOptimizationPlaybook().digest,
+        })
+
+        const started = await context.service.start({
+            ...directedConfig(),
+            idempotencyKey: "directed-start",
+        })
+        assert.equal(started.run.optimizationDirection, "重点改善异常下钻")
+        assert.deepEqual(started.run.playbook, preflight.playbook)
+        assert.equal(Object.hasOwn(started.run.playbook, "content"), false)
+        assert.equal(Object.hasOwn(started.run.playbook, "sources"), false)
+    })
+
     it("freezes at start, creates the experiment workspace and launches a scoped Operator Runner", async () => {
         const context = fixture()
         const first = await context.service.preflight(config())

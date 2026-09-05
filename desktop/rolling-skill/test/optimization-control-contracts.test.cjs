@@ -125,7 +125,52 @@ function compactRunOutput(state = "editing") {
     return output
 }
 
+function directedConfig() {
+    return {...compactConfig(), optimizationDirection: "重点改善异常下钻"}
+}
+
+function directedRunOutput(state = "editing") {
+    const output = compactRunOutput(state)
+    output.run.optimizationDirection = "重点改善异常下钻"
+    output.run.playbook = {
+        id: "rolling-skill-optimization",
+        version: 1,
+        digest: `sha256:${"c".repeat(64)}`,
+    }
+    return output
+}
+
 describe("optimization control contracts", () => {
+    it("accepts strict v3 direction inputs and safe Playbook output identity", () => {
+        const start = parseControlInput("optimization.start", {
+            ...directedConfig(),
+            idempotencyKey: "directed-start",
+        })
+        assert.equal(start.optimizationDirection, "重点改善异常下钻")
+        assert.doesNotThrow(() => parseControlOutput("optimization.start", directedRunOutput()))
+        assert.doesNotThrow(() => parseControlOutput("optimization.preflight", {
+            snapshotDigest: `sha256:${"a".repeat(64)}`,
+            baseline: directedRunOutput().run.baseline,
+            dataset: directedRunOutput().run.dataset,
+            rubric: directedRunOutput().run.rubric,
+            targets: directedRunOutput().run.targets,
+            optimizationDirection: "重点改善异常下钻",
+            playbook: directedRunOutput().run.playbook,
+            ready: true,
+        }))
+        assert.throws(() => parseControlInput("optimization.start", {
+            ...directedConfig(),
+            optimizationDirection: "x".repeat(8_001),
+            idempotencyKey: "oversized-direction",
+        }), (error) => error.code === "INVALID_ARGUMENT")
+        assert.throws(() => parseControlOutput("optimization.start", {
+            run: {...directedRunOutput().run, playbook: {
+                ...directedRunOutput().run.playbook,
+                content: "must not be public",
+            }},
+        }), (error) => error.code === "INVALID_RESULT")
+    })
+
     it("accepts compact Epoch-only start and preflight inputs above the old 100-Epoch cap", () => {
         const preflight = parseControlInput("optimization.preflight", {
             ...compactConfig(),
