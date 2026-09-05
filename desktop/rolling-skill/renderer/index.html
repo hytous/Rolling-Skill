@@ -314,8 +314,16 @@
                                 <span class="panel-kicker" data-i18n="operator">Self-operation</span>
                                 <strong data-i18n="operatorJobs">Jobs</strong>
                             </div>
-                            <button id="operator-new-job" class="primary" type="button" data-i18n="operatorNewJob">New Job</button>
+                            <div class="operator-panel-actions">
+                                <button id="operator-manage-jobs" type="button" data-i18n="operatorManageJobs">Manage</button>
+                                <button id="operator-new-job" class="primary" type="button" data-i18n="operatorNewJob">New Job</button>
+                            </div>
                         </header>
+                        <div id="operator-job-bulk-actions" class="operator-job-bulk-actions hidden">
+                            <button id="operator-select-all-jobs" type="button" data-i18n="operatorSelectAllFinished">Select finished</button>
+                            <button id="operator-delete-selected-jobs" type="button">Delete selected</button>
+                            <button id="operator-cancel-job-management" type="button" data-i18n="operatorCancelManagement">Cancel</button>
+                        </div>
                         <nav id="operator-job-list" class="operator-job-list" aria-label="Operator Jobs" data-i18n-aria-label="operatorJobs"></nav>
                     </aside>
 

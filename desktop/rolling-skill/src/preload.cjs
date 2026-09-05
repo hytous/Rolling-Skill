@@ -94,6 +94,8 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     getOperatorSession: (sessionId) => ipcRenderer.invoke("operator:get", {sessionId}),
     sendOperatorMessage: (sessionId, text) =>
         ipcRenderer.invoke("operator:send", {sessionId, text}),
+    dismissOperatorJobRecords: (jobIds) =>
+        ipcRenderer.invoke("operator:dismiss-records", {jobIds}),
     pauseOperatorJob: (jobId) => invokeControl("jobs.pause", {jobId})
         .then((result) => result.job),
     resumeOperatorJob: (jobId) => invokeControl("jobs.resume", {jobId})

@@ -1472,6 +1472,21 @@
         return actions
     }
 
+    function operatorJobRecordDeletionView(snapshots = [], selectedJobIds = new Set()) {
+        const eligibleJobIds = snapshots
+            .filter((snapshot) => ["succeeded", "failed", "cancelled"].includes(snapshot?.job?.status))
+            .map((snapshot) => snapshot.job.id)
+            .filter(Boolean)
+        const eligible = new Set(eligibleJobIds)
+        const selected = [...selectedJobIds].filter((jobId) => eligible.has(jobId))
+        return {
+            eligibleJobIds,
+            selectedJobIds: selected,
+            selectedCount: selected.length,
+            allSelected: eligibleJobIds.length > 0 && selected.length === eligibleJobIds.length,
+        }
+    }
+
     function operatorJobTreeIds(snapshot) {
         const rootId = snapshot?.job?.id
         if (!rootId) return new Set()
@@ -1896,6 +1911,11 @@
         const selectors = {
             jobList: root.querySelector("#operator-job-list"),
             newJob: root.querySelector("#operator-new-job"),
+            manageJobs: root.querySelector("#operator-manage-jobs"),
+            jobBulkActions: root.querySelector("#operator-job-bulk-actions"),
+            selectAllJobs: root.querySelector("#operator-select-all-jobs"),
+            deleteSelectedJobs: root.querySelector("#operator-delete-selected-jobs"),
+            cancelJobManagement: root.querySelector("#operator-cancel-job-management"),
             setup: root.querySelector("#operator-setup-form"),
             setupScroll: root.querySelector("#operator-setup-scroll"),
             setupError: root.querySelector("#operator-setup-error"),
@@ -1974,8 +1994,12 @@
         let activeRenderedJobId = null
         let activeOptimizationRunId = null
         let optimizationPollTimer = null
+        let managingJobs = false
+        let dismissRecordsPending = false
+        const selectedJobIds = new Set()
         const optimizationRuns = new Map()
         const domEvents = createOperatorDomListenerScope()
+        const confirmAction = options.confirm ?? ((message_) => globalObject?.confirm?.(message_) === true)
 
         const state = createOperatorWorkbenchState({
             readSummaryPage: (cursor, limit) => api.readOperatorSummaryPage(cursor, limit),
@@ -2835,16 +2859,47 @@
         function ensureJobNode(jobId) {
             let node_ = jobNodes.get(jobId)
             if (node_) return node_
-            node_ = createElement(document_, "button", "operator-job-item")
-            node_.type = "button"
+            node_ = createElement(document_, "article", "operator-job-item")
             node_.dataset.operatorJobId = jobId
-            node_.append(
+            const selection = createElement(document_, "input", "operator-job-select")
+            selection.type = "checkbox"
+            selection.dataset.operatorJobSelect = jobId
+            const open = createElement(document_, "button", "operator-job-open")
+            open.type = "button"
+            open.dataset.operatorJobOpen = jobId
+            open.append(
                 createElement(document_, "strong", "operator-job-title"),
                 createElement(document_, "span", "operator-job-meta"),
                 createElement(document_, "span", "operator-job-unread hidden"),
             )
+            node_.append(selection, open)
             jobNodes.set(jobId, node_)
             return node_
+        }
+
+        function patchJobManagement(snapshots = state.listSnapshots()) {
+            const view = operatorJobRecordDeletionView(snapshots, selectedJobIds)
+            selectedJobIds.clear()
+            for (const jobId of view.selectedJobIds) selectedJobIds.add(jobId)
+            selectors.manageJobs.classList.toggle("hidden", managingJobs)
+            selectors.newJob.classList.toggle("hidden", managingJobs)
+            selectors.jobBulkActions.classList.toggle("hidden", !managingJobs)
+            selectors.manageJobs.disabled = view.eligibleJobIds.length === 0
+            selectors.selectAllJobs.disabled = view.eligibleJobIds.length === 0 || dismissRecordsPending
+            selectors.deleteSelectedJobs.disabled = view.selectedCount === 0 || dismissRecordsPending
+            selectors.cancelJobManagement.disabled = dismissRecordsPending
+            selectors.deleteSelectedJobs.textContent = message(
+                "operatorDeleteSelectedCount",
+                {count: view.selectedCount},
+                `Delete selected (${view.selectedCount})`,
+            )
+            return view
+        }
+
+        function setJobManagement(next) {
+            managingJobs = next === true
+            if (!managingJobs) selectedJobIds.clear()
+            patchJobList()
         }
 
         function patchJobList() {
@@ -2870,13 +2925,28 @@
             for (const snapshot of snapshots) {
                 const jobId = snapshot.job.id
                 const node_ = ensureJobNode(jobId)
+                const dismissible = ["succeeded", "failed", "cancelled"].includes(snapshot.job.status)
                 retained.add(jobId)
                 node_.classList.toggle("active", jobId === state.activeJobId && !creating)
+                node_.classList.toggle("managing", managingJobs)
+                node_.classList.toggle("not-dismissible", managingJobs && !dismissible)
                 node_.querySelector(".operator-job-title").textContent = operatorJobTitle(
                     snapshot,
                     catalogs.skills,
                 )
                 node_.querySelector(".operator-job-meta").textContent = jobStatusText(snapshot.job.status)
+                const selection = node_.querySelector(".operator-job-select")
+                selection.classList.toggle("hidden", !managingJobs)
+                selection.checked = selectedJobIds.has(jobId)
+                selection.disabled = !dismissible || dismissRecordsPending
+                selection.setAttribute("aria-label", dismissible
+                    ? message("operatorSelectJobRecord", {
+                        title: operatorJobTitle(snapshot, catalogs.skills),
+                    }, `Select ${operatorJobTitle(snapshot, catalogs.skills)}`)
+                    : text("operatorFinishBeforeDelete", "Stop this task before deleting its record"))
+                node_.title = managingJobs && !dismissible
+                    ? text("operatorFinishBeforeDelete", "Stop this task before deleting its record")
+                    : ""
                 const unread = Object.values(snapshot.unread).reduce((sum, value) => sum + value, 0)
                 const badge = node_.querySelector(".operator-job-unread")
                 badge.textContent = String(unread)
@@ -2887,6 +2957,43 @@
                 if (retained.has(jobId)) continue
                 node_.remove()
                 jobNodes.delete(jobId)
+            }
+            patchJobManagement(snapshots)
+        }
+
+        async function dismissSelectedJobRecords() {
+            const view = operatorJobRecordDeletionView(state.listSnapshots(), selectedJobIds)
+            if (dismissRecordsPending || view.selectedCount === 0 || typeof api.dismissOperatorJobRecords !== "function") return
+            const confirmed = await Promise.resolve(confirmAction(message(
+                "operatorDeleteRecordsConfirm",
+                {count: view.selectedCount},
+                `Remove ${view.selectedCount} finished task records from this list? Optimization reports and audit evidence will be kept.`,
+            )))
+            if (!confirmed || destroyed) return
+            dismissRecordsPending = true
+            const removedActive = view.selectedJobIds.includes(state.activeJobId)
+            patchJobManagement()
+            try {
+                if (removedActive) saveActiveView()
+                await api.dismissOperatorJobRecords(view.selectedJobIds)
+                if (destroyed) return
+                selectedJobIds.clear()
+                managingJobs = false
+                await state.catchUp()
+                if (destroyed) return
+                if (removedActive) {
+                    await state.activateSession(null)
+                    creating = true
+                    activeRenderedJobId = null
+                    transcriptPatcher.reset([])
+                }
+                patchJobList()
+                patchActiveChrome()
+            } catch (error) {
+                if (!destroyed) onError(error)
+            } finally {
+                dismissRecordsPending = false
+                if (!destroyed) patchJobManagement()
             }
         }
 
@@ -3369,7 +3476,26 @@
         domEvents.listen(selectors.jobList, "click", (event) => {
             const button = event.target.closest("[data-operator-job-id]")
             const snapshot = button ? state.getSnapshot(button.dataset.operatorJobId) : null
+            if (managingJobs) {
+                if (!snapshot || !["succeeded", "failed", "cancelled"].includes(snapshot.job.status)) return
+                const selection = event.target.closest("[data-operator-job-select]")
+                const selected = selection ? selection.checked : !selectedJobIds.has(snapshot.job.id)
+                if (selected) selectedJobIds.add(snapshot.job.id)
+                else selectedJobIds.delete(snapshot.job.id)
+                patchJobList()
+                return
+            }
             if (snapshot?.session?.id) void activateSession(snapshot.session.id)
+        })
+        domEvents.listen(selectors.manageJobs, "click", () => setJobManagement(true))
+        domEvents.listen(selectors.cancelJobManagement, "click", () => setJobManagement(false))
+        domEvents.listen(selectors.selectAllJobs, "click", () => {
+            const view = operatorJobRecordDeletionView(state.listSnapshots(), selectedJobIds)
+            for (const jobId of view.eligibleJobIds) selectedJobIds.add(jobId)
+            patchJobList()
+        })
+        domEvents.listen(selectors.deleteSelectedJobs, "click", () => {
+            void dismissSelectedJobRecords()
         })
         domEvents.listen(selectors.newJob, "click", () => {
             if (destroyed) return
@@ -3484,6 +3610,7 @@
         optimizationFinalApprovalView,
         optimizationSetupErrorText,
         operatorJobTitle,
+        operatorJobRecordDeletionView,
         operatorStatusText,
         operatorJobTreeIds,
         operatorSessionActions,

@@ -1227,6 +1227,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     pauseOperatorJob: (jobId) => invokeOperator("pause", {jobId}),
     resumeOperatorJob: (jobId) => invokeOperator("resume", {jobId}),
     stopOperatorJob: (jobId) => invokeOperator("stop", {jobId}),
+    dismissOperatorJobRecords: (jobIds) => invokeOperator("dismiss-records", {jobIds}),
     startOptimization: async (input) => {
         smokeOptimizationStartCalls += 1
         smokeOptimizationStartInputs.push(structuredClone(input))

@@ -3074,6 +3074,20 @@ function installIpc() {
             String(request.text ?? ""),
         ))
     })
+    ipcMain.handle("operator:dismiss-records", (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(input, new Set(["jobIds"]))
+        if (!Array.isArray(request.jobIds) || request.jobIds.length < 1 || request.jobIds.length > 100) {
+            throw new Error("Select between 1 and 100 Operator Job records")
+        }
+        const jobIds = request.jobIds.map((jobId) => requireIdentifier(jobId, "Operator Job"))
+        if (new Set(jobIds).size !== jobIds.length) {
+            throw new Error("Operator Job record ids must be unique")
+        }
+        const result = operatorJobStore.dismissJobRecords(jobIds)
+        notifyOperatorChanged(result, jobIds, "dismissJobRecords")
+        return operatorSafeValue(result)
+    })
     ipcMain.handle("operator:list-artifacts", (event, input = {}) => {
         assertRendererControlSender(event)
         const request = rendererOperatorInput(

@@ -2517,6 +2517,7 @@ describe("desktop main/preload bridge", () => {
             if (channel === "operator:create") return {session: {id: "session-1"}, parentJob: {id: "job-1"}}
             if (channel === "operator:get") return {session: {id: payload.sessionId}, parentJob: {id: "job-1"}}
             if (channel === "operator:send") return {queued: true}
+            if (channel === "operator:dismiss-records") return {jobIds: payload.jobIds}
             if (channel === "operator:list-artifacts") {
                 return {artifacts: [{id: "artifact-1"}], nextCursor: null}
             }
@@ -2550,6 +2551,10 @@ describe("desktop main/preload bridge", () => {
         assert.equal((await api.pauseOperatorJob("job-1")).id, "job-1")
         assert.equal((await api.resumeOperatorJob("job-1")).id, "job-1")
         assert.equal((await api.stopOperatorJob("job-1")).id, "job-1")
+        assert.deepEqual(
+            plain(await api.dismissOperatorJobRecords(["job-1", "job-2"])),
+            {jobIds: ["job-1", "job-2"]},
+        )
         assert.equal((await api.resolveOperatorApproval("approval-1", "approve")).approval.id, "approval-1")
         assert.deepEqual(plain(await api.listOperatorArtifacts("job-1")), {
             artifacts: [{id: "artifact-1"}],
@@ -2568,6 +2573,9 @@ describe("desktop main/preload bridge", () => {
                 assert.deepEqual(Object.keys(call.payload).sort(), ["method", "params"])
             }
         }
+        assert.deepEqual(plain(calls.find((call) => (
+            call.channel === "operator:dismiss-records"
+        ))?.payload), {jobIds: ["job-1", "job-2"]})
     })
 
     it("broadcasts bounded Operator deltas without reading the full durable registry", () => {
@@ -3002,6 +3010,7 @@ describe("desktop main/preload bridge", () => {
             "operator:create",
             "operator:get",
             "operator:send",
+            "operator:dismiss-records",
             "operator:list-artifacts",
         ]) assert.match(main, new RegExp(channel))
         for (const channel of [
@@ -3010,6 +3019,7 @@ describe("desktop main/preload bridge", () => {
             "operator:create",
             "operator:get",
             "operator:send",
+            "operator:dismiss-records",
             "operator:list-artifacts",
         ]) {
             const start = main.indexOf(`ipcMain.handle("${channel}"`)
@@ -3017,6 +3027,13 @@ describe("desktop main/preload bridge", () => {
             assert.ok(start >= 0, `${channel} must be registered`)
             assert.match(main.slice(start, end > start ? end : main.length), /assertRendererControlSender\(event\)/)
         }
+        const dismissStart = main.indexOf('ipcMain.handle("operator:dismiss-records"')
+        const dismissEnd = main.indexOf("\n    ipcMain.handle", dismissStart + 1)
+        const dismissHandler = main.slice(dismissStart, dismissEnd)
+        assert.match(dismissHandler, /new Set\(\["jobIds"\]\)/)
+        assert.match(dismissHandler, /dismissJobRecords/)
+        assert.match(dismissHandler, /notifyOperatorChanged/)
+        assert.doesNotMatch(source("src/control-plane/contracts.cjs"), /"jobs\.(?:dismiss|delete|remove)"/u)
         for (const channel of [
             "operator:changed",
             "operator:event",

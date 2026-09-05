@@ -658,7 +658,7 @@ kbd {
 .operator-job-panel {
     display: grid;
     padding: 14px;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .operator-panel-header {
@@ -684,6 +684,12 @@ kbd {
 .operator-session-header > div:first-child {
     display: grid;
     gap: 3px;
+}
+
+.operator-panel-header > .operator-panel-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
 }
 
 .operator-panel-header strong {
@@ -718,18 +724,88 @@ kbd {
     padding: 10px 4px 0 0;
 }
 
+.operator-job-bulk-actions {
+    display: flex;
+    min-width: 0;
+    padding: 7px;
+    border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    gap: 5px;
+}
+
+.operator-job-bulk-actions button {
+    min-width: 0;
+    min-height: 25px;
+    padding: 0 7px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 9.5px;
+    white-space: nowrap;
+}
+
+.operator-job-bulk-actions button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+}
+
+.operator-job-bulk-actions button:disabled {
+    opacity: 0.48;
+}
+
+#operator-delete-selected-jobs:not(:disabled) {
+    border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
+}
+
 .operator-job-item {
     position: relative;
     display: grid;
     width: 100%;
     min-width: 0;
     margin-bottom: 5px;
-    padding: 11px 30px 11px 11px;
+    padding: 0;
     border: 1px solid transparent;
     border-radius: 9px;
     background: transparent;
     gap: 5px;
     text-align: left;
+}
+
+.operator-job-open {
+    position: relative;
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    padding: 11px 30px 11px 11px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    color: inherit;
+    gap: 5px;
+    text-align: left;
+}
+
+.operator-job-select {
+    position: absolute;
+    z-index: 1;
+    top: 50%;
+    left: 10px;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: var(--accent);
+    transform: translateY(-50%);
+}
+
+.operator-job-item.managing .operator-job-open {
+    padding-left: 34px;
+}
+
+.operator-job-item.not-dismissible {
+    opacity: 0.58;
 }
 
 .operator-job-item:hover {

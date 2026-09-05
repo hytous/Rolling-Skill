@@ -23,6 +23,7 @@ const {
     optimizationSetupErrorText,
     optimizationRunActions,
     operatorJobTitle,
+    operatorJobRecordDeletionView,
     operatorStatusText,
     operatorJobTreeIds,
     operatorSessionActions,
@@ -191,6 +192,42 @@ describe("Operator workbench state", () => {
 
         assert.equal(operatorStatusText("waiting_approval", translate), "等待审批")
         assert.equal(operatorStatusText(null, translate), "未知状态")
+    })
+
+    it("selects only terminal root task records for batch deletion", () => {
+        const snapshots = [
+            {job: {id: "job-success", status: "succeeded"}},
+            {job: {id: "job-failed", status: "failed"}},
+            {job: {id: "job-cancelled", status: "cancelled"}},
+            {job: {id: "job-running", status: "running"}},
+            {job: {id: "job-recovery", status: "needs_recovery"}},
+        ]
+        assert.deepEqual(operatorJobRecordDeletionView(
+            snapshots,
+            new Set(["job-success", "job-running", "missing"]),
+        ), {
+            eligibleJobIds: ["job-success", "job-failed", "job-cancelled"],
+            selectedJobIds: ["job-success"],
+            selectedCount: 1,
+            allSelected: false,
+        })
+        assert.deepEqual(operatorJobRecordDeletionView(
+            snapshots,
+            new Set(["job-success", "job-failed", "job-cancelled"]),
+        ).allSelected, true)
+    })
+
+    it("includes compact localized controls for managing task history", () => {
+        const markup = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")
+        const source = fs.readFileSync(require.resolve("../renderer/operator-workbench.js"), "utf8")
+        assert.match(markup, /id="operator-manage-jobs"[^>]+data-i18n="operatorManageJobs"/u)
+        assert.match(markup, /id="operator-job-bulk-actions"[^>]+hidden/u)
+        assert.match(markup, /id="operator-select-all-jobs"[^>]+data-i18n="operatorSelectAllFinished"/u)
+        assert.match(markup, /id="operator-delete-selected-jobs"/u)
+        assert.match(markup, /id="operator-cancel-job-management"[^>]+data-i18n="operatorCancelManagement"/u)
+        assert.match(source, /dismissOperatorJobRecords/u)
+        assert.match(source, /operatorDeleteRecordsConfirm/u)
+        assert.match(source, /state\.catchUp\(\)/u)
     })
 
     it("bounds root approval actions to its persisted Job tree", () => {

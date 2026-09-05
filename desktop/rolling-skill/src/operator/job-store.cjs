@@ -18,7 +18,8 @@ const {basename, dirname, isAbsolute, join, resolve} = require("node:path")
 const {normalizeOperatorBudget} = require("./operator-budget.cjs")
 
 const LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
-const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2"
+const V2_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2"
+const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v3"
 const MAX_STORE_BYTES = 64 * 1024 * 1024
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 const MAX_ENVELOPE_BYTES = 256 * 1024
@@ -213,6 +214,7 @@ function initialState() {
         approvals: [],
         artifacts: [],
         events: [],
+        dismissedRootJobIds: [],
     }
 }
 
@@ -645,66 +647,78 @@ function migrateLegacyEnvelope(value, baseFields, label) {
     return migrated
 }
 
-function migrateV1State(value, artifactDirectory) {
-    const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"]
-    exactKeys(value, stateFields, "Operator Job store")
-    if (value.schemaVersion !== LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+function migrateState(value, artifactDirectory) {
+    const legacyFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"]
+    const currentFields = [...legacyFields, "dismissedRootJobIds"]
+    requireObject(value, "Operator Job store")
+    if (value.schemaVersion === OPERATOR_JOB_STORE_SCHEMA) {
+        exactKeys(value, currentFields, "Operator Job store")
         return {state: value, migrated: false}
     }
+    exactKeys(value, legacyFields, "Operator Job store")
+    if (![LEGACY_OPERATOR_JOB_STORE_SCHEMA, V2_OPERATOR_JOB_STORE_SCHEMA].includes(value.schemaVersion)) {
+        throw new Error("Unsupported Operator Job store schema")
+    }
     const state = cloneJson(value, "Operator Job store")
-    if (
-        !Array.isArray(state.sessions) ||
-        !Array.isArray(state.events) ||
-        !Array.isArray(state.artifacts) ||
-        !Array.isArray(state.steps) ||
-        state.steps.length !== 0
-    ) {
-        throw new Error("Legacy Operator Job store does not match the v1 parent format")
-    }
-    const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"]
-    for (const session of state.sessions) {
-        if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue
-        session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
-            entry,
-            transcriptBase,
-            "Operator transcript entry",
+    if (value.schemaVersion === LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+        if (
+            !Array.isArray(state.sessions) ||
+            !Array.isArray(state.events) ||
+            !Array.isArray(state.artifacts) ||
+            !Array.isArray(state.steps) ||
+            state.steps.length !== 0
+        ) {
+            throw new Error("Legacy Operator Job store does not match the v1 parent format")
+        }
+        const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"]
+        for (const session of state.sessions) {
+            if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue
+            session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
+                entry,
+                transcriptBase,
+                "Operator transcript entry",
+            ))
+        }
+        const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"]
+        state.events = state.events.map((event) => migrateLegacyEnvelope(
+            event,
+            eventBase,
+            "Operator event",
         ))
-    }
-    const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"]
-    state.events = state.events.map((event) => migrateLegacyEnvelope(
-        event,
-        eventBase,
-        "Operator event",
-    ))
-    for (const artifact of state.artifacts) {
-        if (!isPlainObject(artifact) || artifact.path === null) continue
-        if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
-            throw new Error("Legacy Operator artifact path is not an absolute v1 path")
+        for (const artifact of state.artifacts) {
+            if (!isPlainObject(artifact) || artifact.path === null) continue
+            if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
+                throw new Error("Legacy Operator artifact path is not an absolute v1 path")
+            }
+            const expectedName = artifactFileName(
+                requiredText(artifact.id, "Legacy Operator artifact id", 200),
+                requiredText(artifact.sha256, "Legacy Operator artifact digest", 64),
+            )
+            const expectedPath = join(artifactDirectory, expectedName)
+            const legacyArtifact = secureFileMetadata(
+                artifact.path,
+                dirname(artifact.path),
+                MAX_ARTIFACT_BYTES,
+                "Legacy Operator artifact",
+            )
+            if (legacyArtifact.realPath !== resolve(expectedPath)) {
+                throw new Error("Legacy Operator artifact path escapes its private directory")
+            }
+            artifact.path = expectedName
         }
-        const expectedName = artifactFileName(
-            requiredText(artifact.id, "Legacy Operator artifact id", 200),
-            requiredText(artifact.sha256, "Legacy Operator artifact digest", 64),
-        )
-        const expectedPath = join(artifactDirectory, expectedName)
-        const legacyArtifact = secureFileMetadata(
-            artifact.path,
-            dirname(artifact.path),
-            MAX_ARTIFACT_BYTES,
-            "Legacy Operator artifact",
-        )
-        if (legacyArtifact.realPath !== resolve(expectedPath)) {
-            throw new Error("Legacy Operator artifact path escapes its private directory")
-        }
-        artifact.path = expectedName
     }
+    state.dismissedRootJobIds = []
     state.schemaVersion = OPERATOR_JOB_STORE_SCHEMA
     return {state, migrated: true}
 }
 
 function canonicalState(value) {
-    exactKeys(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store")
+    exactKeys(value, [
+        "schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events",
+        "dismissedRootJobIds",
+    ], "Operator Job store")
     if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) throw new Error("Unsupported Operator Job store schema")
-    for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events"]) {
+    for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events", "dismissedRootJobIds"]) {
         if (!Array.isArray(value[field])) throw new Error(`Operator Job store ${field} must be an array`)
     }
     const state = {
@@ -715,6 +729,10 @@ function canonicalState(value) {
         approvals: value.approvals.map(canonicalApproval),
         artifacts: value.artifacts.map(canonicalArtifact),
         events: value.events.map(canonicalEvent),
+        dismissedRootJobIds: uniqueTextArray(
+            value.dismissedRootJobIds,
+            "Dismissed root Operator Job ids",
+        ),
     }
     const uniqueById = (entries, label) => {
         const ids = entries.map((entry) => entry.id)
@@ -783,6 +801,14 @@ function canonicalState(value) {
             if (!equalJson(job.terminalSnapshot, terminalSnapshotFrom(job))) {
                 throw new Error("Operator Job terminal snapshot does not match the Job")
             }
+        }
+    }
+    for (const jobId of state.dismissedRootJobIds) {
+        const job = jobs.get(jobId)
+        if (!job) throw new Error("Dismissed root Operator Job reference is invalid")
+        if (job.parentJobId !== null) throw new Error("Dismissed Operator Job must be a root Job")
+        if (!TERMINAL_JOB_STATUSES.has(job.status)) {
+            throw new Error("Dismissed root Operator Job must be terminal")
         }
     }
     const jobVisitColors = new Map()
@@ -1108,9 +1134,31 @@ function decodeSummaryCursor(cursor) {
     return {generation, revision, offset}
 }
 
+function visibleSummaryState(state) {
+    const hiddenJobIds = new Set()
+    const jobs = new Map(state.jobs.map((job) => [job.id, job]))
+    const stack = [...state.dismissedRootJobIds]
+    while (stack.length > 0) {
+        const jobId = stack.pop()
+        if (hiddenJobIds.has(jobId)) continue
+        hiddenJobIds.add(jobId)
+        for (const childId of jobs.get(jobId)?.children ?? []) stack.push(childId)
+    }
+    const visibleJobs = state.jobs.filter((job) => !hiddenJobIds.has(job.id))
+    const visibleJobIds = new Set(visibleJobs.map((job) => job.id))
+    const visibleSessionIds = new Set(visibleJobs.map((job) => job.sessionId))
+    return {
+        sessions: state.sessions.filter((session) => visibleSessionIds.has(session.id)),
+        jobs: visibleJobs,
+        steps: state.steps.filter((step) => visibleJobIds.has(step.jobId)),
+        approvals: state.approvals.filter((approval) => visibleJobIds.has(approval.jobId)),
+    }
+}
+
 function operatorSummaryRecords(state) {
+    const visible = visibleSummaryState(state)
     const records = []
-    const activeJobs = state.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+    const activeJobs = visible.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
     const activeJobIds = new Set(activeJobs.map((job) => job.id))
     const activeSessionIds = new Set(activeJobs.map((job) => job.sessionId))
     const push = (kind, value) => records.push({kind, value})
@@ -1123,35 +1171,35 @@ function operatorSummaryRecords(state) {
         .map(({value}) => value)
 
     for (const job of activeJobs) push("jobs", job)
-    for (const session of state.sessions) {
+    for (const session of visible.sessions) {
         if (activeSessionIds.has(session.id)) push("sessions", session)
     }
-    for (const approval of state.approvals) {
+    for (const approval of visible.approvals) {
         if (approval.status === "pending") push("approvals", approval)
     }
-    for (const step of state.steps) {
+    for (const step of visible.steps) {
         if (activeJobIds.has(step.jobId)) push("steps", step)
     }
     for (const job of recentFirst(
-        state.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
+        visible.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
         (entry) => entry.updatedAt,
     )) {
         push("jobs", job)
     }
     for (const session of recentFirst(
-        state.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
+        visible.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
         (entry) => entry.updatedAt,
     )) {
         push("sessions", session)
     }
     for (const approval of recentFirst(
-        state.approvals.filter((entry) => entry.status !== "pending"),
+        visible.approvals.filter((entry) => entry.status !== "pending"),
         (entry) => entry.resolvedAt ?? entry.createdAt,
     )) {
         push("approvals", approval)
     }
     for (const step of recentFirst(
-        state.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
+        visible.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
         (entry) => entry.updatedAt,
     )) {
         push("steps", step)
@@ -1263,7 +1311,7 @@ class OperatorJobStore {
         }
         try {
             const encoded = readSecureFile(this.#path, dirname(this.#path), MAX_STORE_BYTES, "Operator Job store")
-            const migration = migrateV1State(
+            const migration = migrateState(
                 JSON.parse(encoded.toString("utf8")),
                 this.#artifactDirectory,
             )
@@ -1318,6 +1366,7 @@ class OperatorJobStore {
             approvals: copy(this.#state.approvals),
             artifacts: this.#state.artifacts.map((artifact) => this.#publicArtifact(artifact)),
             events: this.#state.events.map(publicEvent),
+            dismissedRootJobIds: copy(this.#state.dismissedRootJobIds),
         }
     }
 
@@ -1340,6 +1389,7 @@ class OperatorJobStore {
             offset = decoded.offset
         }
         const records = operatorSummaryRecords(this.#state)
+        const visible = visibleSummaryState(this.#state)
         if (offset > records.length) throw new Error("Operator summary cursor is invalid")
         const output = {sessions: [], jobs: [], steps: [], approvals: []}
         const projectors = {
@@ -1357,10 +1407,10 @@ class OperatorJobStore {
             revision,
             ...output,
             totals: {
-                sessions: this.#state.sessions.length,
-                jobs: this.#state.jobs.length,
-                steps: this.#state.steps.length,
-                approvals: this.#state.approvals.length,
+                sessions: visible.sessions.length,
+                jobs: visible.jobs.length,
+                steps: visible.steps.length,
+                approvals: visible.approvals.length,
             },
             truncated: end < records.length,
             nextCursor: end < records.length
@@ -1466,6 +1516,41 @@ class OperatorJobStore {
             (sessionId === null || job.sessionId === sessionId) &&
             (parentJobId === undefined || job.parentJobId === parentJobId)
         )))
+    }
+
+    dismissJobRecords(jobIds) {
+        if (!Array.isArray(jobIds) || jobIds.length < 1 || jobIds.length > 100) {
+            throw new Error("Operator Job record dismissal requires at least 1 and at most 100 Job ids")
+        }
+        const normalized = jobIds.map((jobId) => requiredText(jobId, "Operator Job id", 200))
+        if (new Set(normalized).size !== normalized.length) {
+            throw new Error("Operator Job record ids must be unique without duplicates")
+        }
+        const jobs = new Map(this.#state.jobs.map((job) => [job.id, job]))
+        for (const jobId of normalized) {
+            const job = jobs.get(jobId)
+            if (!job) throw new Error("Operator Job not found")
+            if (job.parentJobId !== null) throw new Error("Only a root Operator Job record can be dismissed")
+            const stack = [job.id]
+            const visited = new Set()
+            while (stack.length > 0) {
+                const currentId = stack.pop()
+                if (visited.has(currentId)) continue
+                visited.add(currentId)
+                const current = jobs.get(currentId)
+                if (!current || !TERMINAL_JOB_STATUSES.has(current.status)) {
+                    throw new Error("Operator Job record can only be dismissed after its whole tree is terminal")
+                }
+                stack.push(...current.children)
+            }
+        }
+        const dismissed = new Set(this.#state.dismissedRootJobIds)
+        const additions = normalized.filter((jobId) => !dismissed.has(jobId))
+        if (additions.length === 0) return {jobIds: normalized}
+        return this.#mutate((state) => {
+            state.dismissedRootJobIds.push(...additions)
+            return {jobIds: normalized}
+        })
     }
 
     createStep(jobId, input = {}) {

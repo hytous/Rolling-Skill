@@ -100,6 +100,8 @@ function createOperatorFixture() {
     let pagingRecordsPopulated = false
     let approvalCalls = 0
     let stopCalls = 0
+    let dismissCalls = 0
+    let dismissedJobIds = []
     let operatorCreateInput = null
     const summaryPageCalls = []
     const artifacts = []
@@ -306,6 +308,10 @@ function createOperatorFixture() {
                 stopCalls += 1
                 store.beginCancellation(input.jobId)
                 return publicOperatorJob(store.cancelJobTree(input.jobId).job)
+            case "dismiss-records":
+                dismissCalls += 1
+                dismissedJobIds = [...input.jobIds]
+                return store.dismissJobRecords(input.jobIds)
             case "create-session": {
                 operatorCreateInput = structuredClone(input)
                 const session = createSession()
@@ -484,7 +490,15 @@ function createOperatorFixture() {
                 }
             }
             case "metrics":
-                return {summaryPageCalls, approvalCalls, stopCalls, operatorCreateInput, fixtureIds}
+                return {
+                    summaryPageCalls,
+                    approvalCalls,
+                    stopCalls,
+                    dismissCalls,
+                    dismissedJobIds,
+                    operatorCreateInput,
+                    fixtureIds,
+                }
             default:
                 throw new Error(`Unknown smoke Operator method: ${method}`)
             }
@@ -1898,6 +1912,43 @@ async function run() {
     await waitFor(window, `!document.querySelector(${JSON.stringify(stopSelector)})`)
     if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().then(({stopCalls}) => stopCalls)')) !== 1) {
         throw new Error("Dynamic Operator control buttons accumulated listeners")
+    }
+
+    await inspect(window, 'document.querySelector("#operator-manage-jobs").click()')
+    await waitFor(window, '!document.querySelector("#operator-job-bulk-actions").classList.contains("hidden")')
+    const operatorRecordManagement = await inspect(window, `(() => ({
+        runningFinished: document.querySelector(${JSON.stringify(`${runningJobSelector} .operator-job-select`)})?.disabled === false,
+        streamingBlocked: document.querySelector(${JSON.stringify(`${streamingJobSelector} .operator-job-select`)})?.disabled === true,
+        waitingBlocked: document.querySelector(${JSON.stringify(`${waitingJobSelector} .operator-job-select`)})?.disabled === true,
+        deleteDisabled: document.querySelector("#operator-delete-selected-jobs")?.disabled,
+    }))()`)
+    if (
+        !operatorRecordManagement.runningFinished ||
+        !operatorRecordManagement.streamingBlocked ||
+        !operatorRecordManagement.waitingBlocked ||
+        !operatorRecordManagement.deleteDisabled
+    ) {
+        throw new Error(`Operator task record boundaries are wrong: ${JSON.stringify(operatorRecordManagement)}`)
+    }
+    await inspect(window, `(() => {
+        window.confirm = () => true
+        document.querySelector(${JSON.stringify(`${runningJobSelector} .operator-job-select`)}).click()
+        document.querySelector("#operator-delete-selected-jobs").click()
+    })()`)
+    await waitFor(window, `!document.querySelector(${JSON.stringify(runningJobSelector)})`)
+    await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
+    const operatorDismissMetrics = await inspect(window, `(async () => ({
+        ...await window.rollingSkill.smokeOperatorMetrics(),
+        bulkHidden: document.querySelector("#operator-job-bulk-actions").classList.contains("hidden"),
+        newJobVisible: !document.querySelector("#operator-new-job").classList.contains("hidden"),
+    }))()`)
+    if (
+        operatorDismissMetrics.dismissCalls !== 1 ||
+        JSON.stringify(operatorDismissMetrics.dismissedJobIds) !== JSON.stringify([operatorFixtureIds.runningJobId]) ||
+        !operatorDismissMetrics.bulkHidden ||
+        !operatorDismissMetrics.newJobVisible
+    ) {
+        throw new Error(`Operator task record dismissal did not settle: ${JSON.stringify(operatorDismissMetrics)}`)
     }
 
     await inspect(window, 'document.querySelector("#operator-new-job").click()')

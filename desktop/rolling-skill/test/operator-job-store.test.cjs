@@ -181,6 +181,106 @@ describe("Operator Job store", () => {
         assert.throws(() => store.readSummaryPage({limit: 1_001}), /summary.*limit/iu)
     })
 
+    it("dismisses terminal root Job records from summaries while preserving audit evidence", () => {
+        const {path, store} = fixture()
+        const hiddenSession = createSession(store)
+        const hiddenRoot = createJob(store, hiddenSession.id, {objective: "old optimization"})
+        const hiddenChild = createJob(store, hiddenSession.id, {
+            parentJobId: hiddenRoot.id,
+            objective: "old evaluation",
+        })
+        store.transitionJob(hiddenRoot.id, "running")
+        store.transitionJob(hiddenChild.id, "running")
+        const step = store.createStep(hiddenChild.id, {
+            method: "datasets.read",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "read-before-dismiss",
+        })
+        store.transitionStep(step.id, "running")
+        const artifact = store.createArtifact(hiddenChild.id, {
+            kind: "evaluation-result",
+            name: "result.json",
+            mediaType: "application/json",
+            body: JSON.stringify({score: 88}),
+        })
+        store.transitionStep(step.id, "succeeded", {outputArtifactIds: [artifact.id]})
+        store.appendEvent(hiddenChild.id, {kind: "evaluation_finished", score: 88})
+        store.transitionJob(hiddenChild.id, "succeeded")
+        store.transitionJob(hiddenRoot.id, "succeeded")
+
+        const visibleSession = createSession(store, {capabilityId: "grant-visible"})
+        const visibleJob = createJob(store, visibleSession.id, {objective: "keep me"})
+        store.transitionJob(visibleJob.id, "cancelled")
+
+        const dismissed = store.dismissJobRecords([hiddenRoot.id])
+        assert.deepEqual(dismissed, {jobIds: [hiddenRoot.id]})
+        const summary = collectSummaryPages(store, {limit: 1})
+        assert.deepEqual(summary.jobs.map((job) => job.id), [visibleJob.id])
+        assert.deepEqual(summary.sessions.map((session) => session.id), [visibleSession.id])
+        assert.deepEqual(summary.steps, [])
+        assert.deepEqual(store.readSummaryPage().totals, {
+            sessions: 1,
+            jobs: 1,
+            steps: 0,
+            approvals: 0,
+        })
+
+        assert.equal(store.getJob(hiddenRoot.id).status, "succeeded")
+        assert.equal(store.getJob(hiddenChild.id).status, "succeeded")
+        assert.equal(store.getSession(hiddenSession.id).id, hiddenSession.id)
+        assert.equal(store.listEvents(hiddenChild.id).at(-1).score, 88)
+        assert.deepEqual(JSON.parse(store.readArtifactBody(artifact.id).toString("utf8")), {score: 88})
+
+        const revision = store.revision
+        assert.deepEqual(store.dismissJobRecords([hiddenRoot.id]), {jobIds: [hiddenRoot.id]})
+        assert.equal(store.revision, revision)
+        store.close()
+
+        const restarted = new OperatorJobStore(path)
+        assert.deepEqual(restarted.read().dismissedRootJobIds, [hiddenRoot.id])
+        assert.deepEqual(collectSummaryPages(restarted).jobs.map((job) => job.id), [visibleJob.id])
+        assert.equal(restarted.getArtifact(artifact.id).id, artifact.id)
+    })
+
+    it("rejects active or child Job record dismissal atomically", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const terminal = createJob(store, session.id, {objective: "terminal"})
+        const child = createJob(store, session.id, {
+            parentJobId: terminal.id,
+            objective: "child",
+        })
+        const active = createJob(store, session.id, {objective: "active"})
+        store.transitionJob(child.id, "cancelled")
+        store.transitionJob(terminal.id, "cancelled")
+        store.transitionJob(active.id, "running")
+
+        assert.throws(() => store.dismissJobRecords([child.id]), /root/iu)
+        assert.throws(() => store.dismissJobRecords([terminal.id, active.id]), /terminal|finished/iu)
+        assert.deepEqual(store.read().dismissedRootJobIds, [])
+        assert.throws(() => store.dismissJobRecords([]), /at least|1/iu)
+        assert.throws(() => store.dismissJobRecords([terminal.id, terminal.id]), /duplicate|unique/iu)
+        assert.throws(() => store.dismissJobRecords(["missing-job"]), /not found/iu)
+    })
+
+    it("migrates v2 registries with an empty dismissed record set", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "cancelled")
+        store.close()
+        rewriteRegistry(path, (registry) => {
+            registry.schemaVersion = "rolling-skill-operator-jobs/v2"
+            delete registry.dismissedRootJobIds
+        })
+
+        const migrated = new OperatorJobStore(path)
+        assert.equal(migrated.read().schemaVersion, OPERATOR_JOB_STORE_SCHEMA)
+        assert.deepEqual(migrated.read().dismissedRootJobIds, [])
+        assert.deepEqual(collectSummaryPages(migrated).jobs.map((entry) => entry.id), [job.id])
+        assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).dismissedRootJobIds, [])
+    })
+
     it("pages every active Job before recent terminal records and rejects a stale cursor", () => {
         const {store} = fixture()
         const session = createSession(store)
@@ -538,6 +638,7 @@ describe("Operator Job store", () => {
         assert.deepEqual(Object.keys(store.read()).sort(), [
             "approvals",
             "artifacts",
+            "dismissedRootJobIds",
             "events",
             "jobs",
             "schemaVersion",
@@ -1380,7 +1481,8 @@ describe("Operator Job store", () => {
         assert.deepEqual(event.payload, {channel: "user-authored"})
         assert.equal(migrated.getArtifact(artifact.id).path, realpathSync(artifact.path))
         const persisted = JSON.parse(readFileSync(path, "utf8"))
-        assert.equal(persisted.schemaVersion, "rolling-skill-operator-jobs/v2")
+        assert.equal(persisted.schemaVersion, OPERATOR_JOB_STORE_SCHEMA)
+        assert.deepEqual(persisted.dismissedRootJobIds, [])
         assert.deepEqual(persisted.sessions[0].transcript[0].payload, {
             payload: {channel: "user-authored"},
             role: "user",
