@@ -289,6 +289,15 @@ App 通过 Runtime state/notification subscription 显示连接、错误和持�
 - 已取消Run的“生成报告”在安装版弹窗中显示冻结证据派生的只读Markdown；`artifactId=null`，没有伪造持久Artifact，也没有把取消状态改写为成功。
 - 费用/令牌累计、更多停止规则、失败接管和跨Host恢复仍不完整，因此J11保持`partial`。
 
+### 0.1.70 Epoch-only 与取消闭环复测
+
+- 安装版 DSH 在选择尚无可信安装记录的 Codex 验证 Runtime 时，不再只显示 `Rolling Skill request failed`；页面明确提示先到“Skill 与安装”安装对应版本，或改选已有可信安装的 Runtime。
+- 去掉最长时间、Agent 轮数、Token 和成本等硬预算后，DSH Host 曾因继续直接读取缺失的 `telemetry` 而无法开始。修复后，同一 Epoch-only 配置的真实 `optimizations.preflight` 返回 `ready:true`。
+- 从安装版页面选择 `incident-response-planner@1.0.0`、`Skill evaluation cases`、Codex 自操作、DSH/GLM-5.3 验证、Codex Judge 并保留 3 个 Epoch，成功创建 Run `0e00e479-4dab-43e9-92b0-d42a0566b688`。优化 Agent 的用户可见任务说明为中文，并明确注入“系统全面优化”和 `Rolling Skill Optimization Playbook v1`；旧 Run 仍保留历史英文说明，不做数据篡改。
+- 在基线评测运行中直接点击自动优化列表的“取消运行”，Run 以 `OPTIMIZATION_CANCELLED` 结束；Evaluation `38acae53-a93e-4d82-9f72-f2af726419ce`、父 Job `27ca1b9d-1b10-47a6-9520-32103db24a25`、子 Job `305fbf72-e154-469a-a52d-de5ca3107c5a` 均为 `cancelled`，Operator Session `2d2eaba2-caff-44e5-94ed-8beb493348c0` 为 `stopped` 且记录了 `operator_session_stopped`。页面没有出现 `Control operation failed`。
+- 后续竞态审查补充覆盖候选评测阶段取消：普通评测/安装会立即收到取消信号，但用于恢复基线的 `experiment_restore` / `experiment_remove` 不会被同一取消标记误杀；停止操作登记后立即向界面返回最新状态，完整取消和回退在后台继续并由页面轮询终态。
+- 这组证据关闭了本轮“开始无反应”“错误不可理解”和基线运行中无法完整取消的问题；完整多 Epoch 候选改写、安装、回归和一次最终审批仍需继续保留为长期 J11 验收项。
+
 ## 横切缺陷清单
 
 | 严重级 | 缺陷 | 影响旅程 | 当前状态 |

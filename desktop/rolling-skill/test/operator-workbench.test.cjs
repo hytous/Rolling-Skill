@@ -27,6 +27,8 @@ const {
     operatorSessionActions,
     reduceOptimizationTimeline,
     registerOperatorActionDelegates,
+    resolveOptimizationResourceSelection,
+    resolveSetupModelId,
     runtimeDisplayParts,
     runtimeDisplayLabel,
     transcriptEntryKey,
@@ -1540,6 +1542,41 @@ describe("multi-Epoch Optimization workbench", () => {
             limits: {maxEpochs: "5"},
         }
     }
+
+    it("defaults optimization to a complete compatible resource set and a real model", () => {
+        const selection = resolveOptimizationResourceSelection({
+            skillId: "skill-incomplete",
+            datasetId: "dataset-unbound",
+            baselineVersionId: "candidate-only",
+        }, {
+            skills: [
+                {id: "skill-incomplete", repositoryId: "repository-1", status: "valid"},
+                {id: "skill-ready", repositoryId: "repository-2", status: "valid"},
+            ],
+            versions: [
+                {id: "candidate-only", skillId: "skill-incomplete", repositoryId: "repository-1", state: "candidate"},
+                {id: "released-ready", skillId: "skill-ready", repositoryId: "repository-2", state: "released"},
+            ],
+            datasets: [
+                {id: "dataset-unbound", activeRubricVersionId: "rubric-1"},
+                {
+                    id: "dataset-ready",
+                    activeRubricVersionId: "rubric-2",
+                    skillReference: {id: "skill-ready", repositoryId: "repository-2"},
+                },
+            ],
+        })
+
+        assert.equal(selection.skillId, "skill-ready")
+        assert.deepEqual(selection.skills.map((entry) => entry.id), ["skill-ready"])
+        assert.equal(selection.datasetId, "dataset-ready")
+        assert.deepEqual(selection.datasets.map((entry) => entry.id), ["dataset-ready"])
+        assert.equal(selection.baselineVersionId, "released-ready")
+        assert.deepEqual(selection.versions.map((entry) => entry.id), ["released-ready"])
+        assert.equal(resolveSetupModelId([{id: "gpt-5.6-sol"}], "", true), "gpt-5.6-sol")
+        assert.equal(resolveSetupModelId([{id: "gpt-5.6-sol"}], "", false), "")
+        assert.equal(resolveSetupModelId([{id: "gpt-5.6-sol"}], "gpt-5.6-sol", true), "gpt-5.6-sol")
+    })
 
     it("builds a compact optimization config from matching Released, Dataset, and model catalogs", () => {
         assert.deepEqual(buildOptimizationConfig(values(), catalogs()), {

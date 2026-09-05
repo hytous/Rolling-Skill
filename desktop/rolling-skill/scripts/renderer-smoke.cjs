@@ -1959,7 +1959,6 @@ async function run() {
             element.dispatchEvent(new Event("change", {bubbles: true}))
         }
         change("#operator-job-kind", "optimization")
-        change("#operator-managed-skill", "managed-skill-smoke-two")
     })()`)
     await waitFor(window, 'document.querySelector("#operator-optimization-baseline option[value=managed-version-released-smoke]")')
     await waitFor(window, 'document.querySelector("[data-operator-target=\\"codebuddy:renderer-smoke\\"]") && document.querySelector("[data-optimization-target-model=\\"codebuddy:renderer-smoke\\"] option")')
@@ -1984,6 +1983,15 @@ async function run() {
             directionHelpVisible: Boolean(document.querySelector("#operator-objective-help")?.getClientRects().length),
             directionRequired: document.querySelector('[name="objective"]')?.required,
             directionMaxLength: document.querySelector('[name="objective"]')?.maxLength,
+            skillLabel: document.querySelector("#operator-managed-skill-label")?.textContent ?? "",
+            datasetLabel: document.querySelector("#operator-managed-dataset-label")?.textContent ?? "",
+            skillValue: document.querySelector("#operator-managed-skill")?.value ?? "",
+            datasetValue: document.querySelector("#operator-managed-dataset")?.value ?? "",
+            baselineValue: document.querySelector("#operator-optimization-baseline")?.value ?? "",
+            operatorModelValue: document.querySelector("#operator-model")?.value ?? "",
+            emptySkillOptions: document.querySelectorAll('#operator-managed-skill option[value=""]').length,
+            emptyDatasetOptions: document.querySelectorAll('#operator-managed-dataset option[value=""]').length,
+            emptyModelOptions: document.querySelectorAll('#operator-model option[value=""]').length,
         }
     })()`)
     if (
@@ -2001,7 +2009,16 @@ async function run() {
         !epochOnlySetup.directionHelp.includes("基线评测和用户使用体验") ||
         !epochOnlySetup.directionHelpVisible ||
         epochOnlySetup.directionRequired ||
-        epochOnlySetup.directionMaxLength !== 8000
+        epochOnlySetup.directionMaxLength !== 8000 ||
+        epochOnlySetup.skillLabel !== "受管 Skill" ||
+        epochOnlySetup.datasetLabel !== "数据集" ||
+        epochOnlySetup.skillValue !== "managed-skill-smoke-two" ||
+        epochOnlySetup.datasetValue !== "optimization-dataset-smoke" ||
+        epochOnlySetup.baselineValue !== "managed-version-released-smoke" ||
+        epochOnlySetup.operatorModelValue !== "gpt-5.6-sol" ||
+        epochOnlySetup.emptySkillOptions !== 0 ||
+        epochOnlySetup.emptyDatasetOptions !== 0 ||
+        epochOnlySetup.emptyModelOptions !== 0
     ) {
         throw new Error(`Optimization setup is not Epoch-only: ${JSON.stringify(epochOnlySetup)}`)
     }
@@ -2030,10 +2047,7 @@ async function run() {
             element.value = value
             element.dispatchEvent(new Event("change", {bubbles: true}))
         }
-        change("#operator-managed-dataset", "optimization-dataset-smoke")
-        change("#operator-optimization-baseline", "managed-version-released-smoke")
         change("#operator-runtime", "codex:renderer-smoke")
-        change("#operator-model", "gpt-5.6-sol")
         change("#operator-effort", "high")
         change("#operator-optimization-judge-runtime", "codex:renderer-smoke")
         change("#operator-optimization-judge-model", "gpt-5.6-sol")

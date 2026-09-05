@@ -341,6 +341,7 @@ git commit -m "feat: add Desktop optimization direction"
 - Modify: `packages/rolling-skill-dsh/src/client/locale.ts`
 - Modify: `packages/rolling-skill-dsh/src/client/workbench/workbench.css`
 - Modify: `packages/rolling-skill-dsh/test/client-source.test.cjs`
+- Modify: `packages/rolling-skill-dsh/test/optimization-preflight-journey.test.cjs`
 - Modify: `packages/rolling-skill-dsh/test/package-manifest.test.cjs`
 - Modify: `packages/rolling-skill-dsh/package.json`
 - Modify: `package-lock.json`
@@ -381,7 +382,8 @@ Change `@rolling-skill/dsh-plugin` from `0.1.69` to `0.1.70` in package metadata
 ```bash
 npm run test:dsh
 npm run build:dsh
-npm run inspect --workspace @rolling-skill/dsh-plugin
+npm pack --workspace @rolling-skill/dsh-plugin --pack-destination .
+node packages/rolling-skill-dsh/scripts/inspect-package.mjs rolling-skill-dsh-plugin-0.1.70.tgz
 ```
 
 Expected: all Core/DSH tests PASS and package inspection succeeds.
@@ -394,12 +396,15 @@ git add packages/rolling-skill-dsh/src/client/workbench/OptimizationPanel.tsx \
   packages/rolling-skill-dsh/src/client/locale.ts \
   packages/rolling-skill-dsh/src/client/workbench/workbench.css \
   packages/rolling-skill-dsh/test/client-source.test.cjs \
+  packages/rolling-skill-dsh/test/optimization-preflight-journey.test.cjs \
   packages/rolling-skill-dsh/test/package-manifest.test.cjs \
   packages/rolling-skill-dsh/package.json package-lock.json
 git commit -m "feat: align DSH optimization direction"
 ```
 
 ### Task 6: Full Verification, Installation, and Delivery
+
+Before full verification, close the remaining Desktop setup dead end found during installed-product testing: optimization mode must expose only Skills with a matching Released version and published-Rubric Dataset, select the compatible Skill/Dataset/baseline and first catalog model automatically, and remove the empty “optional” choices. Generic self-operation keeps its optional resources and Runtime-default model. Cover the selection rules in `desktop/rolling-skill/test/operator-workbench.test.cjs` and the installed renderer path in `desktop/rolling-skill/scripts/renderer-smoke.cjs` before changing the renderer.
 
 **Files:**
 - Modify when new real evidence exists: `docs/quality/dsh-user-journey-audit-2026-09-01.md`

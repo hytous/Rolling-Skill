@@ -82,6 +82,60 @@
         return runtimes.find((entry) => entry?.runtimeId === runtimeId) ?? null
     }
 
+    function resolveOptimizationResourceSelection(values = {}, catalogs = {}) {
+        const allSkills = (Array.isArray(catalogs.skills) ? catalogs.skills : [])
+            .filter((entry) => entry?.status === undefined || entry.status === "valid")
+        const allVersions = Array.isArray(catalogs.versions) ? catalogs.versions : []
+        const allDatasets = Array.isArray(catalogs.datasets) ? catalogs.datasets : []
+        const skills = allSkills.filter((skill) => (
+            allVersions.some((version) => (
+                version?.state === "released" &&
+                version.skillId === skill.id &&
+                version.repositoryId === skill.repositoryId
+            )) &&
+            allDatasets.some((dataset) => (
+                dataset?.skillReference?.id === skill.id &&
+                dataset.skillReference.repositoryId === skill.repositoryId &&
+                typeof dataset.activeRubricVersionId === "string" &&
+                Boolean(dataset.activeRubricVersionId)
+            ))
+        ))
+        const skillId = skills.some((entry) => entry.id === values.skillId)
+            ? values.skillId
+            : skills[0]?.id ?? ""
+        const skill = skills.find((entry) => entry.id === skillId) ?? null
+        const versions = skill ? allVersions.filter((version) => (
+            version?.state === "released" &&
+            version.skillId === skill.id &&
+            version.repositoryId === skill.repositoryId
+        )) : []
+        const datasets = skill ? allDatasets.filter((dataset) => (
+            dataset?.skillReference?.id === skill.id &&
+            dataset.skillReference.repositoryId === skill.repositoryId &&
+            typeof dataset.activeRubricVersionId === "string" &&
+            Boolean(dataset.activeRubricVersionId)
+        )) : []
+        return {
+            skills,
+            skillId,
+            versions,
+            baselineVersionId: versions.some((entry) => entry.id === values.baselineVersionId)
+                ? values.baselineVersionId
+                : versions[0]?.id ?? "",
+            datasets,
+            datasetId: datasets.some((entry) => entry.id === values.datasetId)
+                ? values.datasetId
+                : datasets[0]?.id ?? "",
+        }
+    }
+
+    function resolveSetupModelId(models, selected, required = false) {
+        const entries = Array.isArray(models) ? models : []
+        const normalized = String(selected ?? "").trim()
+        if (entries.some((entry) => modelId(entry) === normalized)) return normalized
+        return required && entries[0] ? modelId(entries[0]) : ""
+    }
+
     function optimizationSelection(value, catalogs, label) {
         const runtimeId = String(value?.runtimeId ?? "").trim()
         const model = String(value?.modelId ?? "").trim()
@@ -1783,7 +1837,9 @@
             runtimeDetail: root.querySelector("#operator-runtime-detail"),
             model: root.querySelector("#operator-model"),
             effort: root.querySelector("#operator-effort"),
+            skillLabel: root.querySelector("#operator-managed-skill-label"),
             skill: root.querySelector("#operator-managed-skill"),
+            datasetLabel: root.querySelector("#operator-managed-dataset-label"),
             dataset: root.querySelector("#operator-managed-dataset"),
             targets: root.querySelector("#operator-target-runtimes"),
             optimizationFields: root.querySelector("#operator-optimization-fields"),
@@ -2037,22 +2093,28 @@
 
         function renderModels(runtimeId) {
             const selected = selectors.model.value
+            const models = availableModels(runtimeId)
+            const optimization = isOptimizationSetup()
+            const loading = modelLoads.has(runtimeId)
             selectors.model.replaceChildren()
-            appendOption(
-                selectors.model,
-                "",
-                modelLoads.has(runtimeId)
-                    ? text("operatorLoadingModels", "Loading models…")
-                    : text("operatorRuntimeDefault", "Runtime default"),
-            )
-            for (const model of availableModels(runtimeId)) {
+            if (!optimization || loading || !models.length) {
+                appendOption(
+                    selectors.model,
+                    "",
+                    loading
+                        ? text("operatorLoadingModels", "Loading models…")
+                        : optimization
+                            ? text("operatorNoModels", "No available models")
+                            : text("operatorRuntimeDefault", "Runtime default"),
+                )
+            }
+            for (const model of models) {
                 const value = modelId(model)
                 if (value) appendOption(selectors.model, value, model.displayName ?? value)
             }
-            if (availableModels(runtimeId).some((entry) => modelId(entry) === selected)) {
-                selectors.model.value = selected
-            }
-            selectors.model.disabled = modelLoads.has(runtimeId)
+            selectors.model.value = resolveSetupModelId(models, selected, optimization)
+            selectors.model.required = optimization
+            selectors.model.disabled = loading || (optimization && !models.length)
             renderEfforts()
         }
 
@@ -2086,15 +2148,25 @@
             return request
         }
 
-        function setSelectOptions(select, values, selected, label) {
+        function setSelectOptions(select, values, selected, label = null) {
             select.replaceChildren()
-            appendOption(select, "", label)
+            if (label !== null) appendOption(select, "", label)
             for (const entry of values) appendOption(select, entry.id, entry.label)
-            select.value = values.some((entry) => entry.id === selected) ? selected : ""
+            select.value = values.some((entry) => entry.id === selected)
+                ? selected
+                : label === null ? values[0]?.id ?? "" : ""
         }
 
         function renderSetupCatalogs() {
             const selectedRuntime = selectors.runtime.value || catalogs.activeRuntimeId
+            const optimization = isOptimizationSetup()
+            const optimizationResources = optimization
+                ? resolveOptimizationResourceSelection({
+                    skillId: selectors.skill.value,
+                    datasetId: selectors.dataset.value,
+                    baselineVersionId: selectors.optimizationBaseline.value,
+                }, catalogs)
+                : null
             selectors.runtime.replaceChildren()
             for (const runtime of catalogs.runtimes) {
                 appendOption(
@@ -2118,31 +2190,36 @@
             selectors.runtimeName.textContent = activeIdentity.base
             selectors.runtimeDetail.textContent = activeIdentity.detail
             selectors.runtimeDetail.title = activeIdentity.detail
+            const skillOptions = optimization
+                ? optimizationResources.skills
+                : catalogs.skills.filter((entry) => entry.status === undefined || entry.status === "valid")
             setSelectOptions(
                 selectors.skill,
-                catalogs.skills.filter((entry) => entry.status === undefined || entry.status === "valid")
-                    .map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
-                selectors.skill.value,
-                text("operatorNoManagedSkill", "No managed Skill"),
+                skillOptions.map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
+                optimization ? optimizationResources.skillId : selectors.skill.value,
+                optimization ? null : text("operatorNoManagedSkill", "No managed Skill"),
             )
+            const datasetOptions = optimization ? optimizationResources.datasets : catalogs.datasets
             setSelectOptions(
                 selectors.dataset,
-                catalogs.datasets.map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
-                selectors.dataset.value,
-                text("operatorNoDataset", "No Dataset"),
+                datasetOptions.map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
+                optimization ? optimizationResources.datasetId : selectors.dataset.value,
+                optimization ? null : text("operatorNoDataset", "No Dataset"),
             )
             const selectedBaseline = selectors.optimizationBaseline.value
-            const releasedVersions = catalogs.versions.filter((entry) => (
-                entry.state === "released" && entry.skillId === selectors.skill.value
-            ))
+            const releasedVersions = optimization
+                ? optimizationResources.versions
+                : catalogs.versions.filter((entry) => (
+                    entry.state === "released" && entry.skillId === selectors.skill.value
+                ))
             setSelectOptions(
                 selectors.optimizationBaseline,
                 releasedVersions.map((entry) => ({
                     id: entry.id,
                     label: entry.label ?? entry.versionLabel ?? entry.id,
                 })),
-                selectedBaseline,
-                text("operatorSelectReleasedBaseline", "Select Released baseline"),
+                optimization ? optimizationResources.baselineVersionId : selectedBaseline,
+                optimization ? null : text("operatorSelectReleasedBaseline", "Select Released baseline"),
             )
             const selectedTargets = new Set(
                 [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
@@ -2246,6 +2323,15 @@
                 )
                 : ""
             selectors.objectiveHelp.classList.toggle("hidden", !optimization)
+            selectors.skillLabel.textContent = optimization
+                ? text("operatorManagedSkill", "Managed Skill")
+                : text("operatorManagedSkillOptional", "Managed Skill · optional")
+            selectors.datasetLabel.textContent = optimization
+                ? text("operatorDataset", "Dataset")
+                : text("operatorDatasetOptional", "Dataset · optional")
+            selectors.skill.required = optimization
+            selectors.dataset.required = optimization
+            selectors.optimizationBaseline.required = optimization
             for (const card of selectors.targets.querySelectorAll("[data-operator-target-card]")) {
                 card.querySelector(".operator-target-runtime-options")?.classList.toggle("hidden", !optimization)
             }
@@ -3057,7 +3143,7 @@
         domEvents.listen(selectors.model, "change", () => {
             if (!destroyed) renderEfforts()
         })
-        domEvents.listen(selectors.jobKind, "change", renderOptimizationSetupMode)
+        domEvents.listen(selectors.jobKind, "change", renderSetupCatalogs)
         domEvents.listen(selectors.skill, "change", renderSetupCatalogs)
         domEvents.listen(selectors.optimizationJudgeRuntime, "change", () => {
             void loadRuntimeModels(selectors.optimizationJudgeRuntime.value)
@@ -3158,6 +3244,8 @@
         optimizationRunActions,
         reduceOptimizationTimeline,
         registerOperatorActionDelegates,
+        resolveOptimizationResourceSelection,
+        resolveSetupModelId,
         runtimeDisplayParts,
         runtimeDisplayLabel,
         transcriptEntryKey,

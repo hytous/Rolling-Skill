@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict")
+const {readFileSync} = require("node:fs")
+const {join} = require("node:path")
 const {describe, it} = require("node:test")
 
 const {
@@ -113,6 +115,20 @@ function fixture(options = {}) {
 }
 
 describe("Rolling Skill Operator services", () => {
+    it("connects Optimization stop to the active Evaluation Runner", () => {
+        const source = readFileSync(join(__dirname, "../src/operator-services.cjs"), "utf8")
+        assert.match(
+            source,
+            /evaluationManager:\s*\{[\s\S]*run:\s*runEvaluation,[\s\S]*cancel:\s*\(runId/u,
+        )
+    })
+
+    it("accepts the Epoch-only Optimization config when optional telemetry caps are absent", () => {
+        const source = readFileSync(join(__dirname, "../src/operator-services.cjs"), "utf8")
+        assert.match(source, /assertOptimizationTelemetrySupport\(config, runtimes\)/u)
+        assert.doesNotMatch(source, /config\.telemetry\.(?:tokens|cost)/u)
+    })
+
     it("uses the packaged Desktop optimization objective and phase-message implementation", () => {
         assert.equal(
             coreOptimizationContext.optimizationRequestMessage,

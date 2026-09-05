@@ -127,6 +127,29 @@ describe("Rolling Skill Host JSON API", () => {
         assert.match(JSON.parse(result.text).error.message, /Skill/)
     })
 
+    it("returns an actionable optimization prerequisite when the target Runtime lacks the released Skill", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({
+            dispatch: async () => {
+                throw new Error("A verified Skill installation is required")
+            },
+        })
+
+        const result = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({method: "optimizations.start", input: {}}),
+        })
+
+        assert.equal(result.status, 409)
+        assert.deepEqual(JSON.parse(result.text), {
+            ok: false,
+            error: {
+                code: "OPTIMIZATION_INSTALLATION_REQUIRED",
+                message: "所选验证 Runtime 尚未安装该已发布 Skill。请先到“Skill 与安装”安装对应版本，或选择已有可信安装的 Runtime。",
+            },
+        })
+    })
+
     it("classifies hostile conversation fields as invalid without exposing details", async () => {
         const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
         const handler = createRollingSkillApiHandler({

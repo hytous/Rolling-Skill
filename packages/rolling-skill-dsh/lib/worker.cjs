@@ -49431,7 +49431,7 @@ var require_job_engine = __commonJS({
             return result;
           } catch (error) {
             const current = this.#store.getJob(child.id);
-            if (current.status === "cancelling" || signal.aborted) {
+            if (current.status === "cancelling" || signal.aborted || (/* @__PURE__ */ new Set(["OPERATOR_CANCELLED", "OPTIMIZATION_CANCELLED"])).has(error?.code)) {
               if (current.status !== "cancelling") this.#store.beginCancellation(child.id);
               this.#store.transitionJob(child.id, "cancelled", {
                 error: {
@@ -55847,7 +55847,7 @@ var require_optimization_control_service = __commonJS({
           throw new Error("Optimization preflight resolver is required");
         }
         this.resolvePreflight = options2.resolvePreflight;
-        this.freezeRun = options2.freezeRun ?? (({ trusted, config, createdAt }) => freezeOptimizationRun({ ...trusted, config, createdAt }));
+        this.freezeRun = options2.freezeRun ?? (({ trusted, config, playbook, createdAt }) => freezeOptimizationRun({ ...trusted, config, playbook, createdAt }));
         if (typeof this.freezeRun !== "function") throw new Error("Optimization freezer is invalid");
         this.readArtifact = options2.readArtifact;
         if (typeof this.readArtifact !== "function") throw new Error("Optimization artifact reader is required");
@@ -56046,7 +56046,9 @@ var require_optimization_control_service = __commonJS({
       }
       async stop(runId) {
         runId = requiredText(runId, "Optimization Run id", 200);
-        await this.runner.stop(runId);
+        const operation = this.runner.stop(runId);
+        Promise.resolve(operation).catch(() => {
+        });
         return this.get(runId);
       }
       submitCandidate(input, context = {}) {
@@ -56475,6 +56477,7 @@ var require_optimization_runner = __commonJS({
     var { parseOptimizationDecision } = require_optimization_contract();
     var { compareEvaluationRuns, evaluateStopRules } = require_optimization_analysis();
     var SUCCESSFUL_INSTALLATION_STATUSES = /* @__PURE__ */ new Set(["succeeded"]);
+    var RECOVERY_INSTALLATION_OPERATIONS = /* @__PURE__ */ new Set(["experiment_restore", "experiment_remove"]);
     function requiredDependency(value, method, label) {
       if (!value || typeof value[method] !== "function") {
         throw new Error(`${label} with ${method}() is required`);
@@ -56728,33 +56731,44 @@ var require_optimization_runner = __commonJS({
         this.controls.set(runId, control);
         return operation;
       }
-      async stop(runId) {
+      stop(runId) {
         const control = this.controls.get(runId);
         if (!control) {
-          const run = this.store.getRun(runId);
-          if (run.state !== "needs_recovery") throw new Error("Optimization Run is not active");
-          const candidates = run.epochs.filter((epoch) => epoch.candidateArtifactId);
+          const run2 = this.store.getRun(runId);
+          if (run2.state !== "needs_recovery") throw new Error("Optimization Run is not active");
+          const candidates = run2.epochs.filter((epoch) => epoch.candidateArtifactId);
           const restored = {
             runId,
             cancelRequested: true,
-            operatorSessionId: run.checkpoint.operatorSessionId,
-            parentJobId: run.checkpoint.operatorParentJobId,
-            initialTargets: clone(run.checkpoint.initialTargets ?? null),
+            operatorSessionId: run2.checkpoint.operatorSessionId,
+            parentJobId: run2.checkpoint.operatorParentJobId,
+            initialTargets: clone(run2.checkpoint.initialTargets ?? null),
             currentCandidate: candidates.length ? this.#readArtifact(candidates.at(-1).candidateArtifactId) : null,
             previousCandidate: candidates.length > 1 ? this.#readArtifact(candidates.at(-2).candidateArtifactId) : null
           };
           const operation = this.#restore(restored, "cancelled", new Error("Optimization cancelled by user")).finally(() => this.controls.delete(runId));
           restored.operation = operation;
           this.controls.set(runId, restored);
-          return { runId, status: "stopping" };
+          return operation;
         }
         control.cancelRequested = true;
         this.store.updateCheckpoint(runId, { stopRequested: true });
         this.operatorGateway.cancelRun?.(runId, "Optimization cancelled by user");
-        if (control.pendingApprovalId) {
-          await this.approvals.reject(control.pendingApprovalId);
+        const run = this.store.getRun(runId);
+        const cancellations = [];
+        if ((/* @__PURE__ */ new Set(["baseline", "evaluating"])).has(run.state) && run.checkpoint?.activeEvaluationRunId && typeof this.evaluationManager.cancel === "function") {
+          cancellations.push(this.evaluationManager.cancel(run.checkpoint.activeEvaluationRunId));
         }
-        return { runId, status: "stopping" };
+        if (run.checkpoint?.installationPending === true && typeof this.installationManager.cancel === "function") {
+          cancellations.push(this.#cancelInstallationJobs(
+            control,
+            run.checkpoint.installationJobIds ?? []
+          ));
+        }
+        if (control.pendingApprovalId) {
+          cancellations.push(this.approvals.reject(control.pendingApprovalId));
+        }
+        return Promise.allSettled(cancellations).then(() => control.operation);
       }
       pause(runId) {
         const control = this.controls.get(runId);
@@ -56845,14 +56859,26 @@ var require_optimization_runner = __commonJS({
         }, operation);
       }
       async #evaluate(control, kind, candidate, installationJobs, epoch = null) {
-        return this.#child(control, `optimization_${kind.replaceAll("-", "_")}`, `Run ${kind} evaluation`, async ({ jobId }) => {
+        const outcome = await this.#child(control, `optimization_${kind.replaceAll("-", "_")}`, `Run ${kind} evaluation`, async ({ jobId }) => {
+          if (control.cancelRequested) {
+            throw Object.assign(new Error("Optimization cancelled before evaluation"), {
+              code: "OPTIMIZATION_CANCELLED"
+            });
+          }
           const evaluation = await this.evaluationManager.run({
             kind,
             optimizationRun: this.store.getRun(control.runId),
             candidate: clone(candidate),
             installationJobs: clone(installationJobs),
             targets: clone(this.store.getRun(control.runId).snapshot.targets)
+          }, {
+            cancelRequested: () => control.cancelRequested
           });
+          if (control.cancelRequested && evaluation?.status === "cancelled") {
+            throw Object.assign(new Error("Optimization cancelled by user"), {
+              code: "OPTIMIZATION_CANCELLED"
+            });
+          }
           if (!evaluation || !(/* @__PURE__ */ new Set(["completed", "partial"])).has(evaluation.status)) {
             const error = new Error(`${kind} evaluation did not complete`);
             error.code = "OPTIMIZATION_EVALUATION_FAILED";
@@ -56865,6 +56891,12 @@ var require_optimization_runner = __commonJS({
           });
           return { evaluation, artifact };
         });
+        if (control.cancelRequested && outcome?.status === "cancelled") {
+          throw Object.assign(new Error("Optimization cancelled by user"), {
+            code: "OPTIMIZATION_CANCELLED"
+          });
+        }
+        return outcome;
       }
       async #waitInstallationJobs(jobs) {
         const completed = await Promise.all(jobs.map(async (job) => {
@@ -56881,6 +56913,16 @@ var require_optimization_runner = __commonJS({
           throw error;
         }
         return completed;
+      }
+      async #cancelInstallationJobs(control, jobIds) {
+        control.cancelledInstallationJobIds ??= /* @__PURE__ */ new Set();
+        const pending = [];
+        for (const jobId of new Set(jobIds)) {
+          if (control.cancelledInstallationJobIds.has(jobId)) continue;
+          control.cancelledInstallationJobIds.add(jobId);
+          pending.push(Promise.resolve().then(() => this.installationManager.cancel(jobId)));
+        }
+        await Promise.allSettled(pending);
       }
       async #experiment(control, operation, candidate, epoch, previousCandidate = null, targetRuntimeIds = null) {
         return this.#child(control, `optimization_${operation}`, `Run ${operation} for Epoch ${epoch}`, async ({ jobId }) => {
@@ -56906,6 +56948,9 @@ var require_optimization_runner = __commonJS({
             installationPending: true
           });
           this.onChanged({ runId: control.runId });
+          if (control.cancelRequested && !RECOVERY_INSTALLATION_OPERATIONS.has(operation) && typeof this.installationManager.cancel === "function") {
+            await this.#cancelInstallationJobs(control, jobs.map((job) => job.id));
+          }
           let completed;
           try {
             completed = await this.#waitInstallationJobs(jobs);
@@ -56985,6 +57030,11 @@ var require_optimization_runner = __commonJS({
               workspace: clone(control.workspace),
               operatorSessionId: control.operatorSessionId
             });
+            if (control.cancelRequested) {
+              throw Object.assign(new Error("Optimization cancelled before Candidate creation"), {
+                code: "OPTIMIZATION_CANCELLED"
+              });
+            }
             const candidateChild = await this.#child(
               control,
               "optimization_candidate",
@@ -57005,6 +57055,11 @@ var require_optimization_runner = __commonJS({
                 return { candidate: version, artifact };
               }
             );
+            if (control.cancelRequested) {
+              throw Object.assign(new Error("Optimization cancelled after Candidate creation"), {
+                code: "OPTIMIZATION_CANCELLED"
+              });
+            }
             control.currentCandidate = candidateChild.candidate;
             this.store.updateEpoch(control.runId, created.epochId, {
               candidateArtifactId: candidateChild.artifact.id
@@ -57211,7 +57266,21 @@ var require_optimization_runner = __commonJS({
               versionId: released.id,
               targets: clone(this.store.getRun(control.runId).snapshot.targets)
             });
-            const completed = await this.#waitInstallationJobs(jobs);
+            this.store.updateCheckpoint(control.runId, {
+              installationJobIds: jobs.map((job) => job.id),
+              installationPending: true
+            });
+            this.onChanged({ runId: control.runId, state: "installing" });
+            if (control.cancelRequested && typeof this.installationManager.cancel === "function") {
+              await this.#cancelInstallationJobs(control, jobs.map((job) => job.id));
+            }
+            let completed;
+            try {
+              completed = await this.#waitInstallationJobs(jobs);
+            } finally {
+              this.store.updateCheckpoint(control.runId, { installationPending: false });
+              this.onChanged({ runId: control.runId, state: "installing" });
+            }
             const artifact = this.#artifact(jobId, "optimization-installation", "released-install.json", {
               versionId: released.id,
               jobs: completed
@@ -59276,6 +59345,25 @@ Rolling-Skill-Optimization-Epoch: ${epoch}`;
   }
 });
 
+// ../../desktop/rolling-skill/src/optimization/optimization-preflight.cjs
+var require_optimization_preflight = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-preflight.cjs"(exports2, module2) {
+    "use strict";
+    function assertOptimizationTelemetrySupport(config = {}, runtimes = []) {
+      const telemetry = config?.telemetry;
+      if (!telemetry) return;
+      const allSupport = (capability) => runtimes.every((runtime) => Array.isArray(runtime.capabilities) && runtime.capabilities.includes(capability));
+      if (telemetry.tokens && !allSupport("token-usage")) {
+        throw new Error("Optimization token telemetry is unavailable on one or more Runtimes");
+      }
+      if (telemetry.cost && !allSupport("cost-usage")) {
+        throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes");
+      }
+    }
+    module2.exports = { assertOptimizationTelemetrySupport };
+  }
+});
+
 // ../rolling-skill-core/src/operator-services.cjs
 var require_operator_services = __commonJS({
   "../rolling-skill-core/src/operator-services.cjs"(exports2, module2) {
@@ -59826,12 +59914,7 @@ var require_operator_services = __commonJS({
             installationStore
           });
         }
-        if (config.telemetry.tokens && runtimes.some((entry) => !entry.capabilities?.includes("token-usage"))) {
-          throw new Error("Optimization token telemetry is unavailable on one or more Runtimes");
-        }
-        if (config.telemetry.cost && runtimes.some((entry) => !entry.capabilities?.includes("cost-usage"))) {
-          throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes");
-        }
+        assertOptimizationTelemetrySupport(config, runtimes);
         const skillEvidence = await snapshotManagedSkillEvidence({
           name: skill.name,
           repositoryId: repository.id,
@@ -59873,7 +59956,7 @@ var require_operator_services = __commonJS({
           skillEvidenceBinding: "verified"
         };
       }
-      async function runEvaluation(input) {
+      async function runEvaluation(input, context = {}) {
         const snapshot = input.optimizationRun.snapshot;
         const frozenDataset = datasetSnapshot(snapshot.dataset.id);
         if (frozenDataset.snapshot.digest !== snapshot.dataset.digest || frozenDataset.rubric.id !== snapshot.rubric.id || frozenDataset.rubric.rubricDigest !== snapshot.rubric.digest) {
@@ -59938,7 +60021,9 @@ var require_operator_services = __commonJS({
           runtimeConfigurations
         }, { optimizationAuthorized: true });
         optimizationStore.updateCheckpoint(input.optimizationRun.id, { activeEvaluationRunId: run.id, activeEvaluationKind: input.kind });
-        await evaluationRunner.run(run);
+        const evaluationOperation = evaluationRunner.run(run);
+        if (context.cancelRequested?.()) await evaluationRunner.cancel(run.id);
+        await evaluationOperation;
         return store.getEvaluationRun(run.id);
       }
       const operatorGateway = new OptimizationOperatorGateway({
@@ -59960,7 +60045,10 @@ var require_operator_services = __commonJS({
         childJobs: createOptimizationChildJobs({ jobStore, jobEngine }),
         workspaceManager,
         installationManager,
-        evaluationManager: { run: runEvaluation },
+        evaluationManager: {
+          run: runEvaluation,
+          cancel: (runId2) => evaluationRunner.cancel(runId2)
+        },
         operatorGateway,
         approvals: {
           request: async (input, onPending = null) => {
@@ -60125,6 +60213,9 @@ var require_operator_services = __commonJS({
     var {
       OptimizationWorkspaceManager
     } = require_optimization_workspace();
+    var {
+      assertOptimizationTelemetrySupport
+    } = require_optimization_preflight();
   }
 });
 

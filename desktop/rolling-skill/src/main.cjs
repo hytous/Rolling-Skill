@@ -233,6 +233,7 @@ let optimizationWorkspaceManager = null
 let optimizationOperatorGateway = null
 let optimizationRunner = null
 let optimizationControlService = null
+const optimizationCompletionTasks = new Map()
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -2439,7 +2440,7 @@ function optimizationCandidateSkillBinding({
     }
 }
 
-async function runOptimizationEvaluation(input) {
+async function runOptimizationEvaluation(input, context = {}) {
     const optimizationRun = input.optimizationRun
     const snapshot = optimizationRun.snapshot
     const frozenDataset = optimizationDatasetSnapshot(snapshot.dataset.id)
@@ -2514,7 +2515,13 @@ async function runOptimizationEvaluation(input) {
         judgeConfiguration,
         runtimeConfigurations,
     }, {optimizationAuthorized: true})
-    await evaluationRunner.run(run)
+    optimizationStore.updateCheckpoint(optimizationRun.id, {
+        activeEvaluationRunId: run.id,
+        activeEvaluationKind: input.kind,
+    })
+    const evaluationOperation = evaluationRunner.run(run)
+    if (context.cancelRequested?.()) await evaluationRunner.cancel(run.id)
+    await evaluationOperation
     return store.getEvaluationRun(run.id)
 }
 
@@ -2613,13 +2620,43 @@ function initializeOptimizationRuntime() {
             }))
         },
     })
+    const optimizationChanged = (update) => {
+        send("optimization:changed", update)
+        if (
+            !new Set(["succeeded", "failed", "cancelled"]).has(update.state) ||
+            optimizationCompletionTasks.has(update.runId)
+        ) return
+        const run = optimizationStore.getRun(update.runId)
+        const {operatorSessionId, operatorParentJobId} = run.checkpoint ?? {}
+        if (!operatorSessionId || !operatorParentJobId) return
+        const operation = Promise.resolve().then(async () => {
+            const parent = operatorJobStore.getJob(operatorParentJobId)
+            if (!new Set(["succeeded", "failed", "cancelled"]).has(parent.status)) {
+                await operatorJobEngine.completeJob(
+                    parent.id,
+                    run.state,
+                    run.error ? {error: run.error} : {},
+                )
+            }
+            await operatorSessionManager.stop(operatorSessionId)
+        }).catch((error) => {
+            optimizationStore.updateCheckpoint(run.id, {
+                operatorCleanupError: String(error?.message ?? error).slice(0, 2_000),
+            })
+            send("optimization:changed", {runId: run.id, state: run.state})
+        })
+        optimizationCompletionTasks.set(run.id, operation)
+    }
     optimizationRunner = new OptimizationRunner({
         store: optimizationStore,
         artifactStore: operatorJobStore,
         childJobs: {run: (input, operation) => operatorJobEngine.runChild(input, operation)},
         workspaceManager: optimizationWorkspaceManager,
         installationManager: skillInstallationManager,
-        evaluationManager: {run: runOptimizationEvaluation},
+        evaluationManager: {
+            run: runOptimizationEvaluation,
+            cancel: (runId) => evaluationRunner.cancel(runId),
+        },
         operatorGateway: optimizationOperatorGateway,
         approvals: {
             request: requestOptimizationApproval,
@@ -2632,7 +2669,7 @@ function initializeOptimizationRuntime() {
         },
         releaseManager: {release: releaseOptimizationCandidate},
         telemetry: optimizationTelemetry,
-        onChanged: (update) => send("optimization:changed", update),
+        onChanged: optimizationChanged,
     })
     optimizationControlService = new OptimizationControlService({
         store: optimizationStore,
@@ -3744,6 +3781,10 @@ function normalizeTurnInput(value) {
     return normalized
 }
 
+async function waitForOptimizationCompletionTasks() {
+    await Promise.allSettled([...optimizationCompletionTasks.values()])
+}
+
 async function shutdownApplication() {
     controlInvocationsAccepted = false
     const failures = []
@@ -3758,10 +3799,11 @@ async function shutdownApplication() {
     await stage("Automatic capture", () => automaticCaptureManager?.stop())
     await stage("Optimization Runner", () => optimizationRunner?.checkpointAndStop?.())
     await stage("Optimization gateway", () => optimizationOperatorGateway?.cancelAll?.())
-    await stage("Operator", () => operatorSessionManager?.stopAll?.({preserveWaitingApprovals: true}))
-    await stage("Optimization Runner idle", () => optimizationRunner?.waitForIdle?.())
     await stage("Evaluation", () => evaluationRunner?.stopAll?.())
     await stage("Skill installation", () => skillInstallationManager?.stopAll?.())
+    await stage("Optimization Runner idle", () => optimizationRunner?.waitForIdle?.())
+    await stage("Optimization completion", () => waitForOptimizationCompletionTasks())
+    await stage("Operator", () => operatorSessionManager?.stopAll?.({preserveWaitingApprovals: true}))
     await stage("Chat Runtime", () => client?.stop?.())
     await stage("control transport", () => stopControlPlane())
     await stage("Optimization store close", () => optimizationStore?.close())

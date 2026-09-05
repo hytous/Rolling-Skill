@@ -4,6 +4,7 @@ const {parseOptimizationDecision} = require("./optimization-contract.cjs")
 const {compareEvaluationRuns, evaluateStopRules} = require("./optimization-analysis.cjs")
 
 const SUCCESSFUL_INSTALLATION_STATUSES = new Set(["succeeded"])
+const RECOVERY_INSTALLATION_OPERATIONS = new Set(["experiment_restore", "experiment_remove"])
 
 function requiredDependency(value, method, label) {
     if (!value || typeof value[method] !== "function") {
@@ -293,7 +294,7 @@ class OptimizationRunner {
         return operation
     }
 
-    async stop(runId) {
+    stop(runId) {
         const control = this.controls.get(runId)
         if (!control) {
             const run = this.store.getRun(runId)
@@ -311,15 +312,33 @@ class OptimizationRunner {
                 .finally(() => this.controls.delete(runId))
             restored.operation = operation
             this.controls.set(runId, restored)
-            return {runId, status: "stopping"}
+            return operation
         }
         control.cancelRequested = true
         this.store.updateCheckpoint(runId, {stopRequested: true})
         this.operatorGateway.cancelRun?.(runId, "Optimization cancelled by user")
-        if (control.pendingApprovalId) {
-            await this.approvals.reject(control.pendingApprovalId)
+        const run = this.store.getRun(runId)
+        const cancellations = []
+        if (
+            new Set(["baseline", "evaluating"]).has(run.state) &&
+            run.checkpoint?.activeEvaluationRunId &&
+            typeof this.evaluationManager.cancel === "function"
+        ) {
+            cancellations.push(this.evaluationManager.cancel(run.checkpoint.activeEvaluationRunId))
         }
-        return {runId, status: "stopping"}
+        if (
+            run.checkpoint?.installationPending === true &&
+            typeof this.installationManager.cancel === "function"
+        ) {
+            cancellations.push(this.#cancelInstallationJobs(
+                control,
+                run.checkpoint.installationJobIds ?? [],
+            ))
+        }
+        if (control.pendingApprovalId) {
+            cancellations.push(this.approvals.reject(control.pendingApprovalId))
+        }
+        return Promise.allSettled(cancellations).then(() => control.operation)
     }
 
     pause(runId) {
@@ -423,14 +442,26 @@ class OptimizationRunner {
     }
 
     async #evaluate(control, kind, candidate, installationJobs, epoch = null) {
-        return this.#child(control, `optimization_${kind.replaceAll("-", "_")}`, `Run ${kind} evaluation`, async ({jobId}) => {
+        const outcome = await this.#child(control, `optimization_${kind.replaceAll("-", "_")}`, `Run ${kind} evaluation`, async ({jobId}) => {
+            if (control.cancelRequested) {
+                throw Object.assign(new Error("Optimization cancelled before evaluation"), {
+                    code: "OPTIMIZATION_CANCELLED",
+                })
+            }
             const evaluation = await this.evaluationManager.run({
                 kind,
                 optimizationRun: this.store.getRun(control.runId),
                 candidate: clone(candidate),
                 installationJobs: clone(installationJobs),
                 targets: clone(this.store.getRun(control.runId).snapshot.targets),
+            }, {
+                cancelRequested: () => control.cancelRequested,
             })
+            if (control.cancelRequested && evaluation?.status === "cancelled") {
+                throw Object.assign(new Error("Optimization cancelled by user"), {
+                    code: "OPTIMIZATION_CANCELLED",
+                })
+            }
             if (!evaluation || !new Set(["completed", "partial"]).has(evaluation.status)) {
                 const error = new Error(`${kind} evaluation did not complete`)
                 error.code = "OPTIMIZATION_EVALUATION_FAILED"
@@ -443,6 +474,12 @@ class OptimizationRunner {
             })
             return {evaluation, artifact}
         })
+        if (control.cancelRequested && outcome?.status === "cancelled") {
+            throw Object.assign(new Error("Optimization cancelled by user"), {
+                code: "OPTIMIZATION_CANCELLED",
+            })
+        }
+        return outcome
     }
 
     async #waitInstallationJobs(jobs) {
@@ -462,6 +499,17 @@ class OptimizationRunner {
             throw error
         }
         return completed
+    }
+
+    async #cancelInstallationJobs(control, jobIds) {
+        control.cancelledInstallationJobIds ??= new Set()
+        const pending = []
+        for (const jobId of new Set(jobIds)) {
+            if (control.cancelledInstallationJobIds.has(jobId)) continue
+            control.cancelledInstallationJobIds.add(jobId)
+            pending.push(Promise.resolve().then(() => this.installationManager.cancel(jobId)))
+        }
+        await Promise.allSettled(pending)
     }
 
     async #experiment(
@@ -499,6 +547,13 @@ class OptimizationRunner {
                 installationPending: true,
             })
             this.onChanged({runId: control.runId})
+            if (
+                control.cancelRequested &&
+                !RECOVERY_INSTALLATION_OPERATIONS.has(operation) &&
+                typeof this.installationManager.cancel === "function"
+            ) {
+                await this.#cancelInstallationJobs(control, jobs.map((job) => job.id))
+            }
             let completed
             try {
                 completed = await this.#waitInstallationJobs(jobs)
@@ -582,6 +637,11 @@ class OptimizationRunner {
                     workspace: clone(control.workspace),
                     operatorSessionId: control.operatorSessionId,
                 })
+                if (control.cancelRequested) {
+                    throw Object.assign(new Error("Optimization cancelled before Candidate creation"), {
+                        code: "OPTIMIZATION_CANCELLED",
+                    })
+                }
                 const candidateChild = await this.#child(
                     control,
                     "optimization_candidate",
@@ -602,6 +662,11 @@ class OptimizationRunner {
                         return {candidate: version, artifact}
                     },
                 )
+                if (control.cancelRequested) {
+                    throw Object.assign(new Error("Optimization cancelled after Candidate creation"), {
+                        code: "OPTIMIZATION_CANCELLED",
+                    })
+                }
                 control.currentCandidate = candidateChild.candidate
                 this.store.updateEpoch(control.runId, created.epochId, {
                     candidateArtifactId: candidateChild.artifact.id,
@@ -814,7 +879,21 @@ class OptimizationRunner {
                     versionId: released.id,
                     targets: clone(this.store.getRun(control.runId).snapshot.targets),
                 })
-                const completed = await this.#waitInstallationJobs(jobs)
+                this.store.updateCheckpoint(control.runId, {
+                    installationJobIds: jobs.map((job) => job.id),
+                    installationPending: true,
+                })
+                this.onChanged({runId: control.runId, state: "installing"})
+                if (control.cancelRequested && typeof this.installationManager.cancel === "function") {
+                    await this.#cancelInstallationJobs(control, jobs.map((job) => job.id))
+                }
+                let completed
+                try {
+                    completed = await this.#waitInstallationJobs(jobs)
+                } finally {
+                    this.store.updateCheckpoint(control.runId, {installationPending: false})
+                    this.onChanged({runId: control.runId, state: "installing"})
+                }
                 const artifact = this.#artifact(jobId, "optimization-installation", "released-install.json", {
                     versionId: released.id,
                     jobs: completed,

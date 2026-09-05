@@ -356,8 +356,8 @@ class OptimizationControlService {
             throw new Error("Optimization preflight resolver is required")
         }
         this.resolvePreflight = options.resolvePreflight
-        this.freezeRun = options.freezeRun ?? (({trusted, config, createdAt}) => (
-            freezeOptimizationRun({...trusted, config, createdAt})
+        this.freezeRun = options.freezeRun ?? (({trusted, config, playbook, createdAt}) => (
+            freezeOptimizationRun({...trusted, config, playbook, createdAt})
         ))
         if (typeof this.freezeRun !== "function") throw new Error("Optimization freezer is invalid")
         this.readArtifact = options.readArtifact
@@ -577,7 +577,8 @@ class OptimizationControlService {
 
     async stop(runId) {
         runId = requiredText(runId, "Optimization Run id", 200)
-        await this.runner.stop(runId)
+        const operation = this.runner.stop(runId)
+        Promise.resolve(operation).catch(() => {})
         return this.get(runId)
     }
 

@@ -422,6 +422,28 @@ describe("Operator Job engine", () => {
         assert.deepEqual(store.getJob(result.jobId).budget, parent.budget)
     })
 
+    it("terminalizes an internally cancelled Optimization phase as cancelled", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id)
+        const engine = new OperatorJobEngine({store})
+
+        const outcome = await engine.runChild({
+            parentJobId: parent.id,
+            type: "optimization_baseline",
+            objective: "Run the baseline evaluation",
+            budget: budget(),
+        }, () => {
+            throw Object.assign(new Error("Optimization cancelled by user"), {
+                code: "OPTIMIZATION_CANCELLED",
+            })
+        })
+
+        const cancelled = store.listJobs({parentJobId: parent.id}).at(-1)
+        assert.equal(outcome.status, "cancelled")
+        assert.equal(cancelled.status, "cancelled")
+        assert.equal(cancelled.error.code, "OPERATOR_CHILD_CANCELLED")
+    })
+
     it("coordinates idempotency and Job queues across Store instances for the same path", async () => {
         const {root, path, store, session} = fixture()
         const job = createJob(store, session.id)

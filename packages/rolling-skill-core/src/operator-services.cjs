@@ -601,12 +601,7 @@ function createOperatorRuntime({
                 candidate: version, installationStore,
             })
         }
-        if (config.telemetry.tokens && runtimes.some((entry) => !entry.capabilities?.includes("token-usage"))) {
-            throw new Error("Optimization token telemetry is unavailable on one or more Runtimes")
-        }
-        if (config.telemetry.cost && runtimes.some((entry) => !entry.capabilities?.includes("cost-usage"))) {
-            throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes")
-        }
+        assertOptimizationTelemetrySupport(config, runtimes)
         const skillEvidence = await snapshotManagedSkillEvidence({
             name: skill.name,
             repositoryId: repository.id,
@@ -650,7 +645,7 @@ function createOperatorRuntime({
         }
     }
 
-    async function runEvaluation(input) {
+    async function runEvaluation(input, context = {}) {
         const snapshot = input.optimizationRun.snapshot
         const frozenDataset = datasetSnapshot(snapshot.dataset.id)
         if (frozenDataset.snapshot.digest !== snapshot.dataset.digest ||
@@ -716,7 +711,9 @@ function createOperatorRuntime({
             runtimeConfigurations,
         }, {optimizationAuthorized: true})
         optimizationStore.updateCheckpoint(input.optimizationRun.id, {activeEvaluationRunId: run.id, activeEvaluationKind: input.kind})
-        await evaluationRunner.run(run)
+        const evaluationOperation = evaluationRunner.run(run)
+        if (context.cancelRequested?.()) await evaluationRunner.cancel(run.id)
+        await evaluationOperation
         return store.getEvaluationRun(run.id)
     }
 
@@ -737,7 +734,10 @@ function createOperatorRuntime({
         childJobs: createOptimizationChildJobs({jobStore, jobEngine}),
         workspaceManager,
         installationManager,
-        evaluationManager: {run: runEvaluation},
+        evaluationManager: {
+            run: runEvaluation,
+            cancel: (runId) => evaluationRunner.cancel(runId),
+        },
         operatorGateway,
         approvals: {
             request: async (input, onPending = null) => {
@@ -912,3 +912,6 @@ const {
 const {
     OptimizationWorkspaceManager,
 } = require("../../../desktop/rolling-skill/src/optimization/optimization-workspace.cjs")
+const {
+    assertOptimizationTelemetrySupport,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-preflight.cjs")

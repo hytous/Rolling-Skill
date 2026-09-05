@@ -639,7 +639,10 @@ class OperatorJobEngine {
                 return result
             } catch (error) {
                 const current = this.#store.getJob(child.id)
-                if (current.status === "cancelling" || signal.aborted) {
+                if (
+                    current.status === "cancelling" || signal.aborted ||
+                    new Set(["OPERATOR_CANCELLED", "OPTIMIZATION_CANCELLED"]).has(error?.code)
+                ) {
                     if (current.status !== "cancelling") this.#store.beginCancellation(child.id)
                     this.#store.transitionJob(child.id, "cancelled", {
                         error: {

@@ -52,13 +52,14 @@ function publicFailure(request, response, error) {
     const message = String(error?.message ?? "")
     // Only exact, known prerequisite messages are public; never expose arbitrary
     // Runtime exceptions, private paths, or credentials from unexpected failures.
-    const captureFailure = {
+    const prerequisiteFailure = {
+        "A verified Skill installation is required": {code: "OPTIMIZATION_INSTALLATION_REQUIRED", message: "所选验证 Runtime 尚未安装该已发布 Skill。请先到“Skill 与安装”安装对应版本，或选择已有可信安装的 Runtime。"},
         "Trusted DSH source Skill evidence is required before curation": {code: "CAPTURE_SKILL_CONTEXT_MISSING", message: "当前来源没有可识别的 Skill 加载信息，请检查所选数据集是否对应该 Case。已有会话上下文中的加载记录会自动承接，无需重复加载。"},
         "Trusted DSH observed Skill does not match the Dataset Skill": {code: "CAPTURE_SKILL_MISMATCH", message: "来源会话的 Skill 与所选数据集不一致，请选择对应数据集。"},
         "Trusted DSH source Skill does not match the verified installation": {code: "CAPTURE_INSTALLATION_MISMATCH", message: "来源 Skill 与已保存的安装记录不一致，请到 Skill 与安装检查对应 Runtime 的安装记录。"},
     }[message]
-    if (captureFailure) {
-        writeJson(request, response, 409, {ok: false, error: captureFailure})
+    if (prerequisiteFailure) {
+        writeJson(request, response, 409, {ok: false, error: prerequisiteFailure})
         return
     }
     if (

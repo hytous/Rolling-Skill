@@ -942,6 +942,10 @@ describe("desktop main/preload bridge", () => {
             main.indexOf("function initializeOptimizationRuntime"),
             main.indexOf("\nfunction startControlSocket"),
         )
+        const optimizationEvaluation = main.slice(
+            main.indexOf("async function runOptimizationEvaluation"),
+            main.indexOf("\nfunction optimizationVersionLabel"),
+        )
         assert.match(main, /optimizationRequestMessage/u)
         assert.match(optimizationInitialization, /optimizationStore\.getRun\(runId\)/u)
         assert.match(optimizationInitialization, /getEvaluationRun\(id\)/u)
@@ -953,6 +957,18 @@ describe("desktop main/preload bridge", () => {
         )
         assert.match(optimizationInitialization, /getArtifact\(artifactId\)/u)
         assert.match(optimizationInitialization, /artifact\.byteLength\s*>\s*maximumBytes/u)
+        assert.match(
+            optimizationEvaluation,
+            /optimizationStore\.updateCheckpoint\([\s\S]*activeEvaluationRunId:[\s\S]*activeEvaluationKind:/u,
+        )
+        assert.match(
+            optimizationInitialization,
+            /evaluationManager:\s*\{[\s\S]*run:\s*runOptimizationEvaluation,[\s\S]*cancel:/u,
+        )
+        assert.match(
+            optimizationInitialization,
+            /completeJob\([\s\S]*sessionManager\.stop|completeJob\([\s\S]*operatorSessionManager\.stop/u,
+        )
         assert.ok(
             optimizationInitialization.indexOf("getArtifact(artifactId)") <
                 optimizationInitialization.indexOf("readArtifactBody(artifactId)"),
@@ -972,6 +988,14 @@ describe("desktop main/preload bridge", () => {
         )
         assert.ok(
             shutdown.indexOf("optimizationOperatorGateway?.cancelAll") < shutdown.indexOf("operatorSessionManager?.stopAll"),
+        )
+        assert.ok(
+            shutdown.indexOf("evaluationRunner?.stopAll") < shutdown.indexOf("optimizationRunner?.waitForIdle"),
+            "active evaluations must stop before shutdown waits for the Optimization Runner",
+        )
+        assert.ok(
+            shutdown.indexOf("skillInstallationManager?.stopAll") < shutdown.indexOf("optimizationRunner?.waitForIdle"),
+            "active installation Jobs must stop before shutdown waits for the Optimization Runner",
         )
         assert.ok(
             shutdown.indexOf("operatorSessionManager?.stopAll") < shutdown.indexOf("optimizationStore?.close"),
@@ -1050,6 +1074,7 @@ describe("desktop main/preload bridge", () => {
         }
         let evidenceSource = null
         let runInput = null
+        let evaluationCheckpoint = null
         const context = mainFunctionContext(
             "optimizationRuntimeConfiguration",
             "optimizationVersionLabel",
@@ -1072,6 +1097,11 @@ describe("desktop main/preload bridge", () => {
                     rubric: {id: "rubric-1", rubricDigest: "rubric-digest"},
                 }),
                 optimizationRuntimeConfiguration: (value) => value,
+                optimizationStore: {
+                    updateCheckpoint: (runId, patch) => {
+                        evaluationCheckpoint = {runId, patch: structuredClone(patch)}
+                    },
+                },
                 snapshotManagedSkillEvidence: async (source_) => {
                     evidenceSource = structuredClone(source_)
                     return {digest: "skill-evidence-digest"}
@@ -1104,6 +1134,7 @@ describe("desktop main/preload bridge", () => {
 
         await context.runOptimizationEvaluation({
             optimizationRun: {
+                id: "optimization-run-1",
                 snapshot: {
                     activationMode: "automatic",
                     baseline,
@@ -1123,6 +1154,10 @@ describe("desktop main/preload bridge", () => {
         })
 
         assert.equal(evidenceSource.versionId, baseline.versionId)
+        assert.deepEqual(evaluationCheckpoint, {
+            runId: "optimization-run-1",
+            patch: {activeEvaluationRunId: "evaluation-1", activeEvaluationKind: "baseline"},
+        })
         assert.equal(runInput.managedVersionSnapshot.versionId, baseline.versionId)
         assert.deepEqual(runInput.managedVersionSnapshot.installationJobIdsByRuntime, {
             "runtime-1": "install-job-1",
@@ -1166,6 +1201,7 @@ describe("desktop main/preload bridge", () => {
             completedAt: "2026-09-04T00:00:00.000Z",
         }
         let runInput = null
+        let evaluationCheckpoint = null
         const context = mainFunctionContext(
             "optimizationRuntimeConfiguration",
             "optimizationVersionLabel",
@@ -1187,6 +1223,11 @@ describe("desktop main/preload bridge", () => {
                     snapshot: {digest: "dataset-digest"},
                     rubric: {id: "rubric-1", rubricDigest: "rubric-digest"},
                 }),
+                optimizationStore: {
+                    updateCheckpoint: (runId, patch) => {
+                        evaluationCheckpoint = {runId, patch: structuredClone(patch)}
+                    },
+                },
                 optionalEffort: (value) => value ?? null,
                 optionalIdentifier: (value) => value ?? null,
                 requireIdentifier: (value) => value,
@@ -1203,6 +1244,7 @@ describe("desktop main/preload bridge", () => {
 
         await context.runOptimizationEvaluation({
             optimizationRun: {
+                id: "optimization-run-1",
                 snapshot: {
                     activationMode: "automatic",
                     dataset: {
@@ -1221,6 +1263,10 @@ describe("desktop main/preload bridge", () => {
         })
 
         assert.equal(runInput.managedVersionSnapshot.versionId, candidate.id)
+        assert.deepEqual(evaluationCheckpoint, {
+            runId: "optimization-run-1",
+            patch: {activeEvaluationRunId: "evaluation-1", activeEvaluationKind: "candidate"},
+        })
         assert.deepEqual(runInput.managedVersionSnapshot.installationJobIdsByRuntime, {
             "runtime-1": installationJob.id,
         })
@@ -2845,8 +2891,9 @@ describe("desktop main/preload bridge", () => {
         const shutdownStart = main.indexOf("async function shutdownApplication")
         const shutdownEnd = main.indexOf("\nconst hasLock", shutdownStart)
         const shutdown = main.slice(shutdownStart, shutdownEnd)
-        assert.ok(shutdown.indexOf("operatorSessionManager?.stopAll") < shutdown.indexOf("evaluationRunner?.stopAll"))
         assert.ok(shutdown.indexOf("evaluationRunner?.stopAll") < shutdown.indexOf("skillInstallationManager?.stopAll"))
+        assert.ok(shutdown.indexOf("skillInstallationManager?.stopAll") < shutdown.indexOf("optimizationRunner?.waitForIdle"))
+        assert.ok(shutdown.indexOf("optimizationRunner?.waitForIdle") < shutdown.indexOf("operatorSessionManager?.stopAll"))
         assert.ok(shutdown.indexOf("skillInstallationManager?.stopAll") < shutdown.indexOf("client?.stop"))
         assert.ok(shutdown.indexOf("client?.stop") < shutdown.indexOf("stopControlPlane()"))
         assert.ok(shutdown.indexOf("stopControlPlane()") < shutdown.indexOf("operatorJobStore?.close"))

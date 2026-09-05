@@ -158,6 +158,12 @@ function runnerFixture(options = {}) {
                 const result = await operation({jobId: `child-${this.sequence.length}`})
                 this.sequence.push({event: "terminal", type: input.type})
                 return result
+            } catch (error) {
+                if (error?.code === "OPTIMIZATION_CANCELLED") {
+                    this.sequence.push({event: "terminal", type: input.type})
+                    return {status: "cancelled", jobId: `child-${this.sequence.length}`}
+                }
+                throw error
             } finally {
                 this.active -= 1
             }
@@ -329,6 +335,246 @@ async function waitForPending(gateway, runId, kind) {
 }
 
 describe("multi-Epoch OptimizationRunner", () => {
+    it("cancels an active baseline evaluation and waits for a terminal Run", async (t) => {
+        let fixture
+        let resolveEvaluation
+        let markEvaluationStarted
+        const evaluationStarted = new Promise((resolve) => {
+            markEvaluationStarted = resolve
+        })
+        const pendingEvaluation = new Promise((resolve) => {
+            resolveEvaluation = resolve
+        })
+        t.after(() => resolveEvaluation?.({id: "active-evaluation", status: "cancelled", results: []}))
+        const cancelledEvaluationIds = []
+        const evaluationManager = {
+            async run() {
+                fixture.store.updateCheckpoint(fixture.run.id, {
+                    activeEvaluationRunId: "active-evaluation",
+                    activeEvaluationKind: "baseline",
+                })
+                markEvaluationStarted()
+                return pendingEvaluation
+            },
+            async cancel(runId) {
+                cancelledEvaluationIds.push(runId)
+                resolveEvaluation({id: runId, status: "cancelled", results: []})
+            },
+        }
+        fixture = runnerFixture({evaluationManager})
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        await evaluationStarted
+
+        const stopped = await fixture.runner.stop(fixture.run.id)
+
+        assert.deepEqual(cancelledEvaluationIds, ["active-evaluation"])
+        assert.equal(stopped.status, "cancelled")
+        assert.equal((await operation).status, "cancelled")
+        const cancelledRun = fixture.store.getRun(fixture.run.id)
+        assert.equal(cancelledRun.state, "cancelled")
+        assert.equal(cancelledRun.error.code, "OPTIMIZATION_CANCELLED")
+        assert.equal(fixture.childJobs.active, 0)
+    })
+
+    it("exposes cancellation to an Evaluation that is still preparing its durable run", async (t) => {
+        let evaluationInput
+        let markEvaluationPreparing
+        let finishPreparation
+        const evaluationPreparing = new Promise((resolve) => {
+            markEvaluationPreparing = resolve
+        })
+        const preparationGate = new Promise((resolve) => {
+            finishPreparation = resolve
+        })
+        t.after(() => finishPreparation?.())
+        const evaluationManager = {
+            async run(_input, context) {
+                evaluationInput = context
+                markEvaluationPreparing()
+                await preparationGate
+                return {id: "late-evaluation", status: "cancelled", results: []}
+            },
+            async cancel() {},
+        }
+        const fixture = runnerFixture({evaluationManager})
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        await evaluationPreparing
+
+        const stopping = fixture.runner.stop(fixture.run.id)
+        assert.equal(evaluationInput.cancelRequested(), true)
+        finishPreparation()
+
+        assert.equal((await stopping).status, "cancelled")
+        assert.equal((await operation).status, "cancelled")
+    })
+
+    it("cancels active experiment installations and waits for a terminal Run", async (t) => {
+        let markInstallationStarted
+        let resolveInstallation
+        const installationStarted = new Promise((resolve) => {
+            markInstallationStarted = resolve
+        })
+        const pendingInstallation = new Promise((resolve) => {
+            resolveInstallation = resolve
+        })
+        t.after(() => resolveInstallation?.({
+            id: "active-installation",
+            status: "cancelled",
+            runtime: {runtimeId: "codex:target"},
+        }))
+        const cancelledInstallationIds = []
+        let fixture
+        const installationManager = {
+            store: {
+                getJob(jobId) {
+                    return {id: jobId, status: "cancelled", runtime: {runtimeId: "codex:target"}}
+                },
+            },
+            async startOptimizationExperiment() {
+                fixture.store.updateCheckpoint(fixture.run.id, {
+                    installationOperation: "experiment_inspect",
+                    installationJobIds: ["active-installation"],
+                    installationPending: true,
+                })
+                markInstallationStarted()
+                return [{id: "active-installation"}]
+            },
+            async start() {
+                throw new Error("released installation must not start")
+            },
+            async wait() {
+                return pendingInstallation
+            },
+            async cancel(jobId) {
+                cancelledInstallationIds.push(jobId)
+                resolveInstallation({
+                    id: jobId,
+                    status: "cancelled",
+                    runtime: {runtimeId: "codex:target"},
+                })
+            },
+        }
+        fixture = runnerFixture({installationManager})
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        await installationStarted
+
+        const stopped = await fixture.runner.stop(fixture.run.id)
+
+        assert.deepEqual(cancelledInstallationIds, ["active-installation"])
+        assert.equal(stopped.status, "cancelled")
+        assert.equal((await operation).status, "cancelled")
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
+        assert.equal(fixture.childJobs.active, 0)
+    })
+
+    it("does not cancel rollback installations after candidate evaluation cancellation", async (t) => {
+        let fixture
+        let resolveCandidateEvaluation
+        let markCandidateEvaluationStarted
+        const candidateEvaluationStarted = new Promise((resolve) => {
+            markCandidateEvaluationStarted = resolve
+        })
+        const pendingCandidateEvaluation = new Promise((resolve) => {
+            resolveCandidateEvaluation = resolve
+        })
+        t.after(() => resolveCandidateEvaluation?.({
+            id: "candidate-evaluation",
+            status: "cancelled",
+            results: [],
+        }))
+        const evaluationManager = {
+            calls: 0,
+            async run(input) {
+                this.calls += 1
+                if (input.kind === "baseline") {
+                    const result = evaluation("baseline-evaluation", 70)
+                    result.results = input.targets.flatMap((target) => result.results.map((entry) => ({
+                        ...entry,
+                        id: `${entry.caseId}:${target.runtimeId}`,
+                        runtimeId: target.runtimeId,
+                    })))
+                    return result
+                }
+                fixture.store.updateCheckpoint(fixture.run.id, {
+                    activeEvaluationRunId: "candidate-evaluation",
+                    activeEvaluationKind: "candidate",
+                })
+                markCandidateEvaluationStarted()
+                return pendingCandidateEvaluation
+            },
+            async cancel(runId) {
+                resolveCandidateEvaluation({id: runId, status: "cancelled", results: []})
+            },
+        }
+        const installationJobs = new Map()
+        const installationOperations = []
+        const cancelledInstallationIds = []
+        let installationSequence = 0
+        const installationManager = {
+            store: {
+                getJob(jobId) {
+                    return structuredClone(installationJobs.get(jobId))
+                },
+            },
+            async startOptimizationExperiment(input) {
+                installationOperations.push(input.operation)
+                return input.targets.map((target) => {
+                    const id = `installation-${++installationSequence}`
+                    installationJobs.set(id, {
+                        id,
+                        operation: input.operation,
+                        status: "succeeded",
+                        runtime: {runtimeId: target.runtimeId},
+                        parsedResult: {
+                            status: "succeeded",
+                            classificationBefore: "managed-clean",
+                            destination: "/runtime/skills/billing",
+                            result: {actualDigest: input.run.snapshot.baseline.contentDigest},
+                        },
+                    })
+                    return {id}
+                })
+            },
+            async start() {
+                throw new Error("released installation must not start")
+            },
+            async wait(jobId) {
+                return structuredClone(installationJobs.get(jobId))
+            },
+            async cancel(jobId) {
+                cancelledInstallationIds.push(jobId)
+                installationJobs.get(jobId).status = "cancelled"
+            },
+        }
+        fixture = runnerFixture({evaluationManager, installationManager})
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        await candidateEvaluationStarted
+
+        const stopped = await fixture.runner.stop(fixture.run.id)
+
+        assert.equal(stopped.status, "cancelled")
+        assert.equal((await operation).status, "cancelled")
+        assert.deepEqual(installationOperations, [
+            "experiment_inspect",
+            "experiment_install",
+            "experiment_restore",
+        ])
+        assert.deepEqual(cancelledInstallationIds, [])
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
+    })
+
     it("cancels a real pending Operator submission without waiting for another model response", async () => {
         const gateway = new OptimizationOperatorGateway()
         const fixture = runnerFixture({operatorGateway: gateway})

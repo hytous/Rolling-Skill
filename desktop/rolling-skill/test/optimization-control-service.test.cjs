@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
-const {mkdtempSync, rmSync} = require("node:fs")
+const {mkdtempSync, rmSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
@@ -13,6 +13,7 @@ const {
 const {currentOptimizationPlaybook} = require(
     "../src/optimization/optimization-playbook.cjs",
 )
+const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -252,6 +253,67 @@ function fixture(options = {}) {
 }
 
 describe("Optimization control service", () => {
+    it("passes the current Playbook through the default v3 freezer", async (t) => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-default-playbook-"))
+        t.after(() => rmSync(root, {recursive: true, force: true}))
+        const skillPath = join(root, "SKILL.md")
+        writeFileSync(skillPath, "# Billing\n\nUse the billing workflow.\n")
+        const context = fixture({
+            freezeRun: undefined,
+            async resolvePreflight() {
+                return {
+                    baseline: {
+                        repositoryId: "repository-1",
+                        skillId: "skill-1",
+                        versionId: "version-1",
+                        state: "released",
+                        commit: "a".repeat(40),
+                        skillName: "billing-cost-management",
+                        skillRoot: ".",
+                        contentDigest: digest("a"),
+                    },
+                    dataset: {
+                        id: "dataset-1",
+                        revision: 7,
+                        caseRevisions: [{
+                            caseId: "case-1",
+                            revision: 3,
+                            rubricVersionId: "rubric-1",
+                            calibrationStatus: "current",
+                        }],
+                        digest: digest("d"),
+                        skillId: "skill-1",
+                        repositoryId: "repository-1",
+                    },
+                    rubric: {
+                        id: "rubric-1",
+                        version: 4,
+                        scoringModel: "unified-100/v1",
+                        digest: digest("b"),
+                        datasetId: "dataset-1",
+                        publishedAt: "2026-08-25T01:02:03.000Z",
+                    },
+                    skillEvidence: snapshotSkillEvidence({
+                        name: "billing-cost-management",
+                        path: skillPath,
+                    }),
+                }
+            },
+        })
+
+        const preflight = await context.service.preflight({
+            ...directedConfig(),
+            optimizationDirection: null,
+        })
+
+        assert.equal(preflight.optimizationDirection, null)
+        assert.deepEqual(preflight.playbook, {
+            id: currentOptimizationPlaybook().id,
+            version: currentOptimizationPlaybook().version,
+            digest: currentOptimizationPlaybook().digest,
+        })
+    })
+
     it("freezes the current Playbook for v3 and exposes only its public identity", async () => {
         const context = fixture()
         const preflight = await context.service.preflight(directedConfig())
@@ -364,6 +426,31 @@ describe("Optimization control service", () => {
         await context.service.stop("optimization-run-1")
         assert.equal(context.runner.paused, "optimization-run-1")
         assert.equal(context.runner.resumed, "optimization-run-1")
+        assert.equal(context.runner.stopped, "optimization-run-1")
+    })
+
+    it("acknowledges stop while cancellation and rollback continue in the background", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "start-stop-background"})
+        let finishStop
+        const stopGate = new Promise((resolve) => {
+            finishStop = resolve
+        })
+        context.runner.stop = (runId) => {
+            context.runner.stopped = runId
+            return stopGate
+        }
+
+        const stopRequest = context.service.stop("optimization-run-1")
+        const first = await Promise.race([
+            stopRequest,
+            new Promise((resolve) => setImmediate(() => resolve("still-waiting"))),
+        ])
+        finishStop({runId: "optimization-run-1", status: "cancelled"})
+        await stopRequest
+
+        assert.notEqual(first, "still-waiting")
+        assert.equal(first.run.id, "optimization-run-1")
         assert.equal(context.runner.stopped, "optimization-run-1")
     })
 
