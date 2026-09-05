@@ -201,7 +201,7 @@ function createAutomaticCaptureService({
         })
         configStore.update(configuration)
         if (hostStarted) {
-            captureManager.reschedule()
+            captureManager.configurationChanged()
         }
         onChanged(status())
         return {
@@ -253,6 +253,7 @@ function createAutomaticCaptureService({
     function startHostSchedule() {
         hostStarted = true
         captureManager.start({catchUp: false})
+        void Promise.resolve(captureManager.clearObsoleteRouteError?.()).catch(onError)
         void Promise.resolve(captureManager.recoverAutomaticSessions?.()).catch(onError)
         return status()
     }

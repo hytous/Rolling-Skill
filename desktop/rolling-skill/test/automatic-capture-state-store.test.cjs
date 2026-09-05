@@ -83,4 +83,27 @@ describe("automatic capture private state store", () => {
         assert.equal(store.read().lastSuccessAt, "2026-08-26T01:03:00.000Z")
         assert.equal(store.read().lastError, null)
     })
+
+    it("clears only the persisted error without changing schedule or thread progress", () => {
+        const {store} = fixture()
+        const slot = "2026-08-26T01:00:00.000Z"
+        store.completeSlot(slot, "2026-08-26T01:01:00.000Z")
+        store.commitThread("codex:/opt/codex-a", "thread-1", {
+            lastInspectedUserItemId: "user-1",
+        }, "2026-08-26T01:01:30.000Z")
+        store.failSlot(new Error("Obsolete route error"), "2026-08-26T01:02:00.000Z")
+
+        store.clearError()
+        store.clearError()
+
+        const state = store.read()
+        assert.equal(state.lastError, null)
+        assert.equal(state.lastScheduledSlot, slot)
+        assert.equal(state.lastRunAt, "2026-08-26T01:02:00.000Z")
+        assert.equal(state.lastSuccessAt, "2026-08-26T01:01:00.000Z")
+        assert.equal(
+            store.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
+            "user-1",
+        )
+    })
 })

@@ -117,6 +117,13 @@ var require_automatic_capture_state_store = __commonJS({
         this.persist();
         return this.read();
       }
+      clearError() {
+        const state = this.load();
+        if (state.lastError === null) return this.read();
+        state.lastError = null;
+        this.persist();
+        return this.read();
+      }
       thread(runtimeId, threadId) {
         const runtime = this.load().runtimes[identifier(runtimeId, "Runtime id")];
         const thread = runtime?.threads?.[identifier(threadId, "Thread id")];
@@ -364,7 +371,8 @@ judge the purpose and provenance of the request, not just the product names it m
 human requesting incident triage or a postmortem for a malfunctioning internal tool is a human
 task, even when the affected tool is Rolling Skill; it is not a generated Rubric/Curator/Judge
 instruction. Keep generated orchestration and synthetic test fixtures excluded.
-identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item.
+Identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item. Copy
+finalAssistantItemId exactly from a supplied agentMessage id; use null if no exact id applies.
 Return JSON only with this exact schema:
 {"eligibleForCase":true,"sourceKind":"human_task|rolling_skill_internal|skill_installation|evaluation_or_optimization|other_internal","skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase|null","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
 <candidate-episode>${JSON.stringify(input)}</candidate-episode>`;
@@ -417,9 +425,9 @@ Return JSON only with this exact schema:
       if (!value.eligibleForCase && (skillName !== null || caseType !== null)) {
         throw new Error("Ineligible episode cannot select a Skill or Case type");
       }
-      const finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
+      let finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
       if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
-        throw new Error("Outcome result references an unknown Assistant Item id");
+        finalAssistantItemId = null;
       }
       if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
         throw new Error("Outcome confidence must be between 0 and 1");
@@ -3239,6 +3247,85 @@ var require_local_store = __commonJS({
         this.persist();
         return copy(dataset);
       }
+      cloneDataset(input = {}) {
+        const name = String(input?.name ?? "").trim();
+        if (!name) throw new Error("Dataset name is required");
+        const sourceDatasetId = String(input?.sourceDatasetId ?? "").trim();
+        if (!sourceDatasetId) throw new Error("Source Dataset is required");
+        if (!Array.isArray(input.caseIds) || input.caseIds.length === 0) {
+          throw new Error("At least one source Case is required");
+        }
+        if (input.caseIds.length > 100) {
+          throw new Error("Dataset clone cannot include more than 100 source Cases");
+        }
+        const caseIds = input.caseIds.map((value) => String(value ?? "").trim());
+        if (caseIds.some((value) => !value)) throw new Error("Source Case id is required");
+        if (new Set(caseIds).size !== caseIds.length) {
+          throw new Error("Source Case selection contains duplicate ids");
+        }
+        const state = this.load();
+        const sourceDataset = requireDataset(state, sourceDatasetId);
+        const sourceCases = caseIds.map((caseId) => {
+          const entry = state.cases.find((candidate) => candidate.id === caseId);
+          if (!entry || entry.datasetId !== sourceDataset.id) {
+            throw new Error("Selected Case does not belong to the source Dataset");
+          }
+          return entry;
+        });
+        const sourceRubric = sourceDataset.activeRubricVersionId ? requireDatasetRubricVersion(state, sourceDataset.activeRubricVersionId) : null;
+        if (sourceRubric && sourceRubric.datasetId !== sourceDataset.id) {
+          throw new Error("Source Dataset active rubric does not belong to the Dataset");
+        }
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const dataset = {
+          id: randomUUID(),
+          name,
+          skillReference: copy(requireDatasetSkill(sourceDataset)),
+          activeRubricVersionId: null,
+          createdAt: now
+        };
+        const rubricVersion = sourceRubric ? {
+          ...copy(sourceRubric),
+          id: randomUUID(),
+          datasetId: dataset.id,
+          version: 1,
+          skillReference: copy(dataset.skillReference),
+          sourceSessionId: null,
+          baseVersionId: null,
+          createdAt: now,
+          publishedAt: now
+        } : null;
+        if (rubricVersion) dataset.activeRubricVersionId = rubricVersion.id;
+        const cases = sourceCases.map((source) => {
+          const currentRubric = Boolean(
+            rubricVersion && source.rubricVersionId === sourceRubric.id && source.rubricCalibration?.status === "current"
+          );
+          return {
+            ...copy(source),
+            id: randomUUID(),
+            datasetId: dataset.id,
+            ...rubricVersion ? {
+              rubricVersionId: currentRubric ? rubricVersion.id : null,
+              rubricCalibration: currentRubric ? {
+                status: "current",
+                rubricVersionId: rubricVersion.id,
+                previousRubricVersionId: null
+              } : {
+                status: "needed",
+                rubricVersionId: rubricVersion.id,
+                previousRubricVersionId: null
+              }
+            } : { rubricVersionId: null, rubricCalibration: null },
+            createdAt: now,
+            updatedAt: now
+          };
+        });
+        state.datasets.push(dataset);
+        if (rubricVersion) state.datasetRubricVersions.push(rubricVersion);
+        state.cases.push(...cases);
+        this.persist();
+        return copy({ dataset, cases, rubricVersion });
+      }
       bindDatasetSkill(datasetId, value) {
         const state = this.load();
         const dataset = requireDataset(state, datasetId);
@@ -3274,8 +3361,8 @@ var require_local_store = __commonJS({
         const dataset = requireDataset(state, datasetId);
         const expectedLegacyReference = normalizeSkillReference(input.expectedLegacyReference);
         const managedSkillReference = normalizeSkillReference(input.managedSkillReference);
-        if (!expectedLegacyReference || expectedLegacyReference.evidencePrecision === "managed" || expectedLegacyReference.evidencePrecision === "name-only" || !expectedLegacyReference.path) {
-          throw new Error("A legacy path Skill binding is required for migration");
+        if (!expectedLegacyReference || expectedLegacyReference.evidencePrecision === "managed") {
+          throw new Error("A legacy Runtime Skill binding is required for migration");
         }
         if (!managedSkillReference || managedSkillReference.evidencePrecision !== "managed") {
           throw new Error("A complete managed Skill identity is required for migration");
@@ -38439,6 +38526,7 @@ var require_contracts = __commonJS({
     var publicOptimizationAnalysis = z.object({
       score: z.number().finite().min(0).max(100).nullable().optional(),
       scoreDelta: z.number().finite().min(-100).max(100).nullable().optional(),
+      baselineScoreDelta: z.number().finite().min(-100).max(100).nullable().optional(),
       passRate: z.number().finite().min(0).max(1).nullable().optional(),
       regressionCount: z.number().int().min(0).max(1e5),
       executionFailureCount: z.number().int().min(0).max(1e5).optional(),
@@ -38646,6 +38734,7 @@ var require_contracts = __commonJS({
       },
       "datasets.create": {
         action: "datasets.write",
+        description: "Create an empty Dataset bound to a managed Skill; this does not copy Cases or a Rubric.",
         input: z.object({
           name: boundedText(500, "Dataset name"),
           repositoryId: id,
@@ -38653,6 +38742,29 @@ var require_contracts = __commonJS({
           idempotencyKey: id
         }).strict(),
         output: z.object({ dataset: publicDataset }).strict()
+      },
+      "datasets.clone": {
+        action: "datasets.write",
+        description: "Create a Dataset by atomically copying selected Cases and the active Rubric from a scoped source Dataset.",
+        input: z.object({
+          sourceDatasetId: id,
+          name: boundedText(500, "Dataset name"),
+          caseIds: z.array(id).min(1).max(100),
+          idempotencyKey: id
+        }).strict().superRefine((input, context) => {
+          if (new Set(input.caseIds).size !== input.caseIds.length) {
+            context.addIssue({
+              code: "custom",
+              path: ["caseIds"],
+              message: "Dataset Case ids must be unique"
+            });
+          }
+        }),
+        output: z.object({
+          dataset: publicDataset,
+          cases: z.array(publicDatasetCase).max(100),
+          rubricCopied: z.boolean()
+        }).strict()
       },
       "datasets.delete": {
         action: "datasets.delete",
@@ -39362,12 +39474,15 @@ var require_operator_tool_transport = __commonJS({
         type: "namespace",
         name: "rolling_skill",
         description: "Scoped Rolling Skill Operator control tools.",
-        tools: OPERATOR_CONTROL_METHODS.map((method) => ({
-          type: "function",
-          name: methodToolName(method),
-          description: `Invoke the scoped Rolling Skill ${method} action.`,
-          inputSchema: z.toJSONSchema(controlDefinition(method).input)
-        }))
+        tools: OPERATOR_CONTROL_METHODS.map((method) => {
+          const definition = controlDefinition(method);
+          return {
+            type: "function",
+            name: methodToolName(method),
+            description: definition.description ?? `Invoke the scoped Rolling Skill ${method} action.`,
+            inputSchema: z.toJSONSchema(definition.input)
+          };
+        })
       }];
     }
     function copy(value) {
@@ -41486,6 +41601,7 @@ var require_automatic_capture = __commonJS({
     var { createHash } = require("node:crypto");
     var MAX_TIMER_DELAY = 2147e6;
     var AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8;
+    var AUTOMATIC_CURATION_ROUTE_ERROR = "Automatic curation requires one compatible Dataset with a published Rubric";
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -41535,6 +41651,13 @@ var require_automatic_capture = __commonJS({
       const preferred = matches.find((dataset) => dataset.id === preferredDatasetId);
       if (preferred) return preferred;
       return matches.length === 1 ? matches[0] : null;
+    }
+    function explicitTargetAcceptsSkill(skill, datasets, targets) {
+      return arrays(targets).some((target) => arrays(datasets).some((dataset) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id && sameAutomaticSkill(dataset.skillReference, skill)));
+    }
+    function automaticTargetsReady(targets, datasets) {
+      const selected = arrays(targets);
+      return selected.length > 0 && selected.every((target) => arrays(datasets).some((dataset) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id && Boolean(dataset.activeRubricVersionId)));
     }
     function closeAnsweredPendingTail(boundary, batch) {
       if (!boundary.pendingStartUserItemId) return boundary;
@@ -41708,6 +41831,21 @@ var require_automatic_capture = __commonJS({
         }, delay);
         this.emitStatus();
         return next;
+      }
+      configurationChanged() {
+        this.stateStore.clearError();
+        return this.reschedule();
+      }
+      async clearObsoleteRouteError() {
+        const persisted = this.stateStore.read();
+        if (persisted.lastError?.message !== AUTOMATIC_CURATION_ROUTE_ERROR) return false;
+        const profile = this.profile();
+        if (profile.mode === "off") return false;
+        const datasets = arrays(await Promise.resolve(this.listDatasets()));
+        if (!automaticTargetsReady(profile.targets, datasets)) return false;
+        this.stateStore.clearError();
+        this.emitStatus();
+        return true;
       }
       async handleNotification() {
         return false;
@@ -42068,15 +42206,15 @@ var require_automatic_capture = __commonJS({
           throw new Error("Automatic curation is unavailable");
         }
         const currentDatasets = arrays(await Promise.resolve(this.listDatasets()));
+        const currentTargets = arrays(currentProfile.targets);
+        if (currentTargets.length && !explicitTargetAcceptsSkill(skill, currentDatasets, currentTargets)) return null;
         const dataset = automaticDatasetFor({
           confidence: source.confidence,
           outcome: source.outcome,
           skill
-        }, currentDatasets, arrays(currentProfile.targets).length ? currentProfile.targets : currentProfile.datasetId);
+        }, currentDatasets, currentTargets.length ? currentTargets : currentProfile.datasetId);
         if (!dataset?.activeRubricVersionId) {
-          throw new Error(
-            "Automatic curation requires one compatible Dataset with a published Rubric"
-          );
+          throw new Error(AUTOMATIC_CURATION_ROUTE_ERROR);
         }
         if (!saved?.rawCase?.id) {
           throw new Error("Automatic curation requires a persisted Raw Case");
@@ -42383,7 +42521,7 @@ var require_automatic_capture_service = __commonJS({
         });
         configStore.update(configuration);
         if (hostStarted) {
-          captureManager.reschedule();
+          captureManager.configurationChanged();
         }
         onChanged(status());
         return {
@@ -42434,6 +42572,7 @@ var require_automatic_capture_service = __commonJS({
       function startHostSchedule() {
         hostStarted = true;
         captureManager.start({ catchUp: false });
+        void Promise.resolve(captureManager.clearObsoleteRouteError?.()).catch(onError);
         void Promise.resolve(captureManager.recoverAutomaticSessions?.()).catch(onError);
         return status();
       }
@@ -44112,6 +44251,10 @@ var require_policy = __commonJS({
         mode: "access",
         keys: Object.freeze(["skillIds", "repositoryIds"])
       }),
+      "datasets.clone": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "repositoryIds"])
+      }),
       "evaluations.get": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
       "evaluations.cancel": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
       "skill_repositories.list": Object.freeze({ mode: "filter", keys: Object.freeze(["repositoryIds"]) }),
@@ -44200,6 +44343,7 @@ var require_policy = __commonJS({
       "evaluations.get": Object.freeze({ kind: "evaluation_run", inputKey: "runId" }),
       "evaluations.cancel": Object.freeze({ kind: "evaluation_run", inputKey: "runId" }),
       "datasets.create": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "datasets.clone": Object.freeze({ kind: "dataset", inputKey: "sourceDatasetId" }),
       "skills.diff": Object.freeze({ kind: "skill", inputKey: "skillId" }),
       "skills.create_candidate": Object.freeze({ kind: "skill", inputKey: "skillId" }),
       "skills.release": Object.freeze({ kind: "skill", inputKey: "skillId" }),
@@ -45575,6 +45719,7 @@ var require_domain_services = __commonJS({
     var { createHash } = require("node:crypto");
     var { isAbsolute, relative, resolve, sep } = require("node:path");
     var TRUSTED_MUTATION_METHODS = /* @__PURE__ */ new Set([
+      "datasets.clone",
       "datasets.delete",
       "datasets.delete_case",
       "curation.save",
@@ -46232,6 +46377,20 @@ var require_domain_services = __commonJS({
         if (typeof evaluationStore?.listCases !== "function") return [];
         return clone(await evaluationStore.listCases(datasetId)).filter((entry) => entry?.datasetId === datasetId);
       }
+      async function activeRubricForDataset(dataset) {
+        if (!dataset?.activeRubricVersionId) return null;
+        if (typeof evaluationStore?.getActiveDatasetRubric !== "function") {
+          throw new Error("Dataset Rubric store unavailable");
+        }
+        let rubric;
+        try {
+          rubric = await evaluationStore.getActiveDatasetRubric(dataset.id);
+        } catch {
+          throw notFound("version");
+        }
+        if (!rubric || rubric.id !== dataset.activeRubricVersionId || rubric.datasetId !== dataset.id) throw notFound("version");
+        return clone(rubric);
+      }
       async function evaluationStartSnapshot(input) {
         const dataset = await requireDataset(input.datasetId);
         const cases = await casesForDataset(input.datasetId);
@@ -46406,6 +46565,25 @@ var require_domain_services = __commonJS({
             caseIds: cases.map((entry) => entry.id).sort(),
             runIds: runs.map((entry) => entry.id).sort(),
             resourceDigest: snapshotDigest({ dataset: execution.dataset, cases, runs })
+          };
+        }
+        if (method === "datasets.clone") {
+          const cases = [...execution.cases].sort((left, right) => String(left.id).localeCompare(String(right.id)));
+          return {
+            method,
+            sourceDatasetId: input.sourceDatasetId,
+            datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+            caseRevisions: cases.map((entry) => ({
+              id: entry.id,
+              revision: entry.revision ?? entry.updatedAt ?? null
+            })),
+            rubricVersionId: execution.rubric?.id ?? null,
+            resourceDigest: snapshotDigest({
+              dataset: execution.dataset,
+              cases,
+              rubric: execution.rubric,
+              skill: execution.skill
+            })
           };
         }
         if (method === "datasets.delete_case") {
@@ -46642,6 +46820,29 @@ var require_domain_services = __commonJS({
             skillIds: [skill.id],
             repositoryIds: [skill.repositoryId]
           }, execution);
+        }
+        if (method === "datasets.clone") {
+          const dataset = await requireDataset(input.sourceDatasetId);
+          const skillId = identifier(dataset.skillReference?.id);
+          const repositoryId = identifier(dataset.skillReference?.repositoryId);
+          if (skillId === null || repositoryId === null) throw notFound("skill");
+          const skill = await requireManagedSkillSelection(skillId, repositoryId);
+          const availableCases = await casesForDataset(dataset.id);
+          const byId = new Map(availableCases.map((entry) => [entry.id, entry]));
+          const cases = input.caseIds.map((caseId) => {
+            const entry = byId.get(caseId);
+            if (!entry) throw notFound("case");
+            return entry;
+          });
+          const rubric = await activeRubricForDataset(dataset);
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "dataset", id: dataset.id },
+            skillIds: [skill.id],
+            datasetIds: [dataset.id],
+            repositoryIds: [skill.repositoryId]
+          }, { method, dataset, cases, rubric, skill });
         }
         if (method === "curation.start") {
           return scopeResolution(null, { method, dataset: await requireDataset(input.datasetId) });
@@ -47002,14 +47203,6 @@ var require_domain_services = __commonJS({
         async "datasets.create"(input, context) {
           const execution = trustedExecution(context, "datasets.create");
           const skill = execution?.skill ?? await requireManagedSkillSelection(input.skillId, input.repositoryId);
-          if (typeof dependencies.resolveManagedSkillBinding !== "function") {
-            throw new Error("Managed Skill binding resolution unavailable");
-          }
-          const binding = await dependencies.resolveManagedSkillBinding(Object.freeze({
-            repositoryId: input.repositoryId,
-            skillId: input.skillId
-          }));
-          if (!binding || typeof binding !== "object" || binding.repositoryId !== input.repositoryId || binding.skillId !== input.skillId || binding.name !== skill.name || !isAbsolute(binding.skillPath) || identifier(binding.providerId) === null || identifier(binding.runtimeId) === null) throw new Error("Managed Skill binding resolution is invalid");
           if (typeof evaluationStore?.createDataset !== "function") {
             throw new Error("Dataset store unavailable");
           }
@@ -47017,18 +47210,39 @@ var require_domain_services = __commonJS({
             name: input.name,
             skillReference: {
               schemaVersion: "rolling-skill-skill-reference/v1",
+              evidencePrecision: "managed",
               id: skill.id,
-              name: binding.name,
-              path: binding.skillPath,
-              scope: null,
+              repositoryId: skill.repositoryId,
+              name: skill.name,
+              path: null,
+              scope: "managed",
               description: skill.description ?? null,
-              providerId: binding.providerId,
-              runtimeId: binding.runtimeId,
-              repositoryId: binding.repositoryId,
+              providerId: null,
+              runtimeId: null,
               confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
             }
           });
           return { dataset: publicDataset(dataset) };
+        },
+        async "datasets.clone"(input, context) {
+          const execution = trustedExecution(context, "datasets.clone");
+          if (execution === null) {
+            await resolveScope("datasets.clone", input, context?.grant);
+          }
+          await assertMutationCurrent("datasets.clone", input, context);
+          if (typeof evaluationStore?.cloneDataset !== "function") {
+            throw new Error("Dataset clone store unavailable");
+          }
+          const result = await evaluationStore.cloneDataset({
+            sourceDatasetId: input.sourceDatasetId,
+            name: input.name,
+            caseIds: input.caseIds
+          });
+          return {
+            dataset: publicDataset(result.dataset),
+            cases: result.cases.map(publicCase),
+            rubricCopied: Boolean(result.rubricVersion)
+          };
         },
         async "datasets.delete"(input, context) {
           const execution = trustedExecution(context, "datasets.delete");
@@ -48902,8 +49116,13 @@ var require_job_engine = __commonJS({
       },
       "datasets.create": {
         datasetId: [["result", "dataset", "id"]],
-        repositoryId: [["result", "dataset", "repositoryId"]],
-        skillId: [["result", "dataset", "skillId"]]
+        repositoryId: [["result", "dataset", "skillReference", "repositoryId"]],
+        skillId: [["result", "dataset", "skillReference", "id"]]
+      },
+      "datasets.clone": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "skillReference", "repositoryId"]],
+        skillId: [["result", "dataset", "skillReference", "id"]]
       },
       "datasets.delete": {
         datasetId: [["result", "dataset", "id"], ["facts", "datasetId"]],
@@ -50577,7 +50796,8 @@ var require_job_store = __commonJS({
     var { basename, dirname: dirname2, isAbsolute, join, resolve } = require("node:path");
     var { normalizeOperatorBudget } = require_operator_budget();
     var LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1";
-    var OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2";
+    var V2_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2";
+    var OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v3";
     var MAX_STORE_BYTES = 64 * 1024 * 1024;
     var MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
     var MAX_ENVELOPE_BYTES = 256 * 1024;
@@ -50747,7 +50967,8 @@ var require_job_store = __commonJS({
         steps: [],
         approvals: [],
         artifacts: [],
-        events: []
+        events: [],
+        dismissedRootJobIds: []
       };
     }
     function normalizeRuntime(value) {
@@ -51211,59 +51432,77 @@ var require_job_store = __commonJS({
       for (const field of baseFields) migrated[field] = cloneJson(value[field], label);
       return migrated;
     }
-    function migrateV1State(value, artifactDirectory) {
-      const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"];
-      exactKeys(value, stateFields, "Operator Job store");
-      if (value.schemaVersion !== LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+    function migrateState(value, artifactDirectory) {
+      const legacyFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"];
+      const currentFields = [...legacyFields, "dismissedRootJobIds"];
+      requireObject(value, "Operator Job store");
+      if (value.schemaVersion === OPERATOR_JOB_STORE_SCHEMA) {
+        exactKeys(value, currentFields, "Operator Job store");
         return { state: value, migrated: false };
       }
+      exactKeys(value, legacyFields, "Operator Job store");
+      if (![LEGACY_OPERATOR_JOB_STORE_SCHEMA, V2_OPERATOR_JOB_STORE_SCHEMA].includes(value.schemaVersion)) {
+        throw new Error("Unsupported Operator Job store schema");
+      }
       const state = cloneJson(value, "Operator Job store");
-      if (!Array.isArray(state.sessions) || !Array.isArray(state.events) || !Array.isArray(state.artifacts) || !Array.isArray(state.steps) || state.steps.length !== 0) {
-        throw new Error("Legacy Operator Job store does not match the v1 parent format");
-      }
-      const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"];
-      for (const session of state.sessions) {
-        if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue;
-        session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
-          entry,
-          transcriptBase,
-          "Operator transcript entry"
+      if (value.schemaVersion === LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+        if (!Array.isArray(state.sessions) || !Array.isArray(state.events) || !Array.isArray(state.artifacts) || !Array.isArray(state.steps) || state.steps.length !== 0) {
+          throw new Error("Legacy Operator Job store does not match the v1 parent format");
+        }
+        const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"];
+        for (const session of state.sessions) {
+          if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue;
+          session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
+            entry,
+            transcriptBase,
+            "Operator transcript entry"
+          ));
+        }
+        const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"];
+        state.events = state.events.map((event) => migrateLegacyEnvelope(
+          event,
+          eventBase,
+          "Operator event"
         ));
-      }
-      const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"];
-      state.events = state.events.map((event) => migrateLegacyEnvelope(
-        event,
-        eventBase,
-        "Operator event"
-      ));
-      for (const artifact of state.artifacts) {
-        if (!isPlainObject(artifact) || artifact.path === null) continue;
-        if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
-          throw new Error("Legacy Operator artifact path is not an absolute v1 path");
+        for (const artifact of state.artifacts) {
+          if (!isPlainObject(artifact) || artifact.path === null) continue;
+          if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
+            throw new Error("Legacy Operator artifact path is not an absolute v1 path");
+          }
+          const expectedName = artifactFileName(
+            requiredText(artifact.id, "Legacy Operator artifact id", 200),
+            requiredText(artifact.sha256, "Legacy Operator artifact digest", 64)
+          );
+          const expectedPath = join(artifactDirectory, expectedName);
+          const legacyArtifact = secureFileMetadata(
+            artifact.path,
+            dirname2(artifact.path),
+            MAX_ARTIFACT_BYTES,
+            "Legacy Operator artifact"
+          );
+          if (legacyArtifact.realPath !== resolve(expectedPath)) {
+            throw new Error("Legacy Operator artifact path escapes its private directory");
+          }
+          artifact.path = expectedName;
         }
-        const expectedName = artifactFileName(
-          requiredText(artifact.id, "Legacy Operator artifact id", 200),
-          requiredText(artifact.sha256, "Legacy Operator artifact digest", 64)
-        );
-        const expectedPath = join(artifactDirectory, expectedName);
-        const legacyArtifact = secureFileMetadata(
-          artifact.path,
-          dirname2(artifact.path),
-          MAX_ARTIFACT_BYTES,
-          "Legacy Operator artifact"
-        );
-        if (legacyArtifact.realPath !== resolve(expectedPath)) {
-          throw new Error("Legacy Operator artifact path escapes its private directory");
-        }
-        artifact.path = expectedName;
       }
+      state.dismissedRootJobIds = [];
       state.schemaVersion = OPERATOR_JOB_STORE_SCHEMA;
       return { state, migrated: true };
     }
     function canonicalState(value) {
-      exactKeys(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store");
+      exactKeys(value, [
+        "schemaVersion",
+        "sessions",
+        "jobs",
+        "steps",
+        "approvals",
+        "artifacts",
+        "events",
+        "dismissedRootJobIds"
+      ], "Operator Job store");
       if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) throw new Error("Unsupported Operator Job store schema");
-      for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events"]) {
+      for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events", "dismissedRootJobIds"]) {
         if (!Array.isArray(value[field])) throw new Error(`Operator Job store ${field} must be an array`);
       }
       const state = {
@@ -51273,7 +51512,11 @@ var require_job_store = __commonJS({
         steps: value.steps.map(canonicalStep),
         approvals: value.approvals.map(canonicalApproval),
         artifacts: value.artifacts.map(canonicalArtifact),
-        events: value.events.map(canonicalEvent)
+        events: value.events.map(canonicalEvent),
+        dismissedRootJobIds: uniqueTextArray(
+          value.dismissedRootJobIds,
+          "Dismissed root Operator Job ids"
+        )
       };
       const uniqueById = (entries, label) => {
         const ids = entries.map((entry) => entry.id);
@@ -51336,6 +51579,14 @@ var require_job_store = __commonJS({
           if (!equalJson(job.terminalSnapshot, terminalSnapshotFrom(job))) {
             throw new Error("Operator Job terminal snapshot does not match the Job");
           }
+        }
+      }
+      for (const jobId of state.dismissedRootJobIds) {
+        const job = jobs.get(jobId);
+        if (!job) throw new Error("Dismissed root Operator Job reference is invalid");
+        if (job.parentJobId !== null) throw new Error("Dismissed Operator Job must be a root Job");
+        if (!TERMINAL_JOB_STATUSES.has(job.status)) {
+          throw new Error("Dismissed root Operator Job must be terminal");
         }
       }
       const jobVisitColors = /* @__PURE__ */ new Map();
@@ -51640,43 +51891,64 @@ var require_job_store = __commonJS({
       }
       return { generation, revision, offset };
     }
+    function visibleSummaryState(state) {
+      const hiddenJobIds = /* @__PURE__ */ new Set();
+      const jobs = new Map(state.jobs.map((job) => [job.id, job]));
+      const stack = [...state.dismissedRootJobIds];
+      while (stack.length > 0) {
+        const jobId = stack.pop();
+        if (hiddenJobIds.has(jobId)) continue;
+        hiddenJobIds.add(jobId);
+        for (const childId of jobs.get(jobId)?.children ?? []) stack.push(childId);
+      }
+      const visibleJobs = state.jobs.filter((job) => !hiddenJobIds.has(job.id));
+      const visibleJobIds = new Set(visibleJobs.map((job) => job.id));
+      const visibleSessionIds = new Set(visibleJobs.map((job) => job.sessionId));
+      return {
+        sessions: state.sessions.filter((session) => visibleSessionIds.has(session.id)),
+        jobs: visibleJobs,
+        steps: state.steps.filter((step) => visibleJobIds.has(step.jobId)),
+        approvals: state.approvals.filter((approval) => visibleJobIds.has(approval.jobId))
+      };
+    }
     function operatorSummaryRecords(state) {
+      const visible = visibleSummaryState(state);
       const records = [];
-      const activeJobs = state.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status));
+      const activeJobs = visible.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status));
       const activeJobIds = new Set(activeJobs.map((job) => job.id));
       const activeSessionIds = new Set(activeJobs.map((job) => job.sessionId));
       const push = (kind, value) => records.push({ kind, value });
       const recentFirst = (values, timestamp) => values.map((value, index) => ({ value, index })).sort((left, right) => String(timestamp(right.value)).localeCompare(String(timestamp(left.value))) || right.index - left.index).map(({ value }) => value);
       for (const job of activeJobs) push("jobs", job);
-      for (const session of state.sessions) {
+      for (const session of visible.sessions) {
         if (activeSessionIds.has(session.id)) push("sessions", session);
       }
-      for (const approval of state.approvals) {
+      for (const approval of visible.approvals) {
         if (approval.status === "pending") push("approvals", approval);
       }
-      for (const step of state.steps) {
+      for (const step of visible.steps) {
         if (activeJobIds.has(step.jobId)) push("steps", step);
       }
       for (const job of recentFirst(
-        state.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
+        visible.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
         (entry) => entry.updatedAt
       )) {
         push("jobs", job);
       }
       for (const session of recentFirst(
-        state.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
+        visible.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
         (entry) => entry.updatedAt
       )) {
         push("sessions", session);
       }
       for (const approval of recentFirst(
-        state.approvals.filter((entry) => entry.status !== "pending"),
+        visible.approvals.filter((entry) => entry.status !== "pending"),
         (entry) => entry.resolvedAt ?? entry.createdAt
       )) {
         push("approvals", approval);
       }
       for (const step of recentFirst(
-        state.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
+        visible.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
         (entry) => entry.updatedAt
       )) {
         push("steps", step);
@@ -51774,7 +52046,7 @@ var require_job_store = __commonJS({
         }
         try {
           const encoded = readSecureFile(this.#path, dirname2(this.#path), MAX_STORE_BYTES, "Operator Job store");
-          const migration = migrateV1State(
+          const migration = migrateState(
             JSON.parse(encoded.toString("utf8")),
             this.#artifactDirectory
           );
@@ -51826,7 +52098,8 @@ var require_job_store = __commonJS({
           steps: copy(this.#state.steps),
           approvals: copy(this.#state.approvals),
           artifacts: this.#state.artifacts.map((artifact) => this.#publicArtifact(artifact)),
-          events: this.#state.events.map(publicEvent)
+          events: this.#state.events.map(publicEvent),
+          dismissedRootJobIds: copy(this.#state.dismissedRootJobIds)
         };
       }
       readSummaryPage({ cursor = null, limit = 200 } = {}) {
@@ -51848,6 +52121,7 @@ var require_job_store = __commonJS({
           offset = decoded.offset;
         }
         const records = operatorSummaryRecords(this.#state);
+        const visible = visibleSummaryState(this.#state);
         if (offset > records.length) throw new Error("Operator summary cursor is invalid");
         const output = { sessions: [], jobs: [], steps: [], approvals: [] };
         const projectors = {
@@ -51865,10 +52139,10 @@ var require_job_store = __commonJS({
           revision,
           ...output,
           totals: {
-            sessions: this.#state.sessions.length,
-            jobs: this.#state.jobs.length,
-            steps: this.#state.steps.length,
-            approvals: this.#state.approvals.length
+            sessions: visible.sessions.length,
+            jobs: visible.jobs.length,
+            steps: visible.steps.length,
+            approvals: visible.approvals.length
           },
           truncated: end < records.length,
           nextCursor: end < records.length ? encodeSummaryCursor(generation, revision, end) : null
@@ -51959,6 +52233,40 @@ var require_job_store = __commonJS({
       }
       listJobs({ sessionId = null, parentJobId = void 0 } = {}) {
         return copy(this.#state.jobs.filter((job) => (sessionId === null || job.sessionId === sessionId) && (parentJobId === void 0 || job.parentJobId === parentJobId)));
+      }
+      dismissJobRecords(jobIds) {
+        if (!Array.isArray(jobIds) || jobIds.length < 1 || jobIds.length > 100) {
+          throw new Error("Operator Job record dismissal requires at least 1 and at most 100 Job ids");
+        }
+        const normalized = jobIds.map((jobId) => requiredText(jobId, "Operator Job id", 200));
+        if (new Set(normalized).size !== normalized.length) {
+          throw new Error("Operator Job record ids must be unique without duplicates");
+        }
+        const jobs = new Map(this.#state.jobs.map((job) => [job.id, job]));
+        for (const jobId of normalized) {
+          const job = jobs.get(jobId);
+          if (!job) throw new Error("Operator Job not found");
+          if (job.parentJobId !== null) throw new Error("Only a root Operator Job record can be dismissed");
+          const stack = [job.id];
+          const visited = /* @__PURE__ */ new Set();
+          while (stack.length > 0) {
+            const currentId = stack.pop();
+            if (visited.has(currentId)) continue;
+            visited.add(currentId);
+            const current = jobs.get(currentId);
+            if (!current || !TERMINAL_JOB_STATUSES.has(current.status)) {
+              throw new Error("Operator Job record can only be dismissed after its whole tree is terminal");
+            }
+            stack.push(...current.children);
+          }
+        }
+        const dismissed = new Set(this.#state.dismissedRootJobIds);
+        const additions = normalized.filter((jobId) => !dismissed.has(jobId));
+        if (additions.length === 0) return { jobIds: normalized };
+        return this.#mutate((state) => {
+          state.dismissedRootJobIds.push(...additions);
+          return { jobIds: normalized };
+        });
       }
       createStep(jobId, input = {}) {
         const stepInput = requireObject(input, "Operator Step");
@@ -55695,6 +56003,7 @@ var require_optimization_control_service = __commonJS({
       for (const [field, minimum, maximum] of [
         ["score", 0, 100],
         ["scoreDelta", -100, 100],
+        ["baselineScoreDelta", -100, 100],
         ["passRate", 0, 1]
       ]) {
         if (Number.isFinite(value[field]) && value[field] >= minimum && value[field] <= maximum) {

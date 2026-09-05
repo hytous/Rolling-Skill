@@ -19,6 +19,8 @@ const {createHash} = require("node:crypto")
 
 const MAX_TIMER_DELAY = 2_147_000_000
 const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
+const AUTOMATIC_CURATION_ROUTE_ERROR =
+    "Automatic curation requires one compatible Dataset with a published Rubric"
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -86,6 +88,23 @@ function automaticDatasetFor(candidate, datasets, preferredDatasetId = null) {
     const preferred = matches.find((dataset) => dataset.id === preferredDatasetId)
     if (preferred) return preferred
     return matches.length === 1 ? matches[0] : null
+}
+
+function explicitTargetAcceptsSkill(skill, datasets, targets) {
+    return arrays(targets).some((target) => arrays(datasets).some((dataset) => (
+        target?.datasetId === dataset.id &&
+        target?.skillId === dataset.skillReference?.id &&
+        sameAutomaticSkill(dataset.skillReference, skill)
+    )))
+}
+
+function automaticTargetsReady(targets, datasets) {
+    const selected = arrays(targets)
+    return selected.length > 0 && selected.every((target) => arrays(datasets).some((dataset) => (
+        target?.datasetId === dataset.id &&
+        target?.skillId === dataset.skillReference?.id &&
+        Boolean(dataset.activeRubricVersionId)
+    )))
 }
 
 function closeAnsweredPendingTail(boundary, batch) {
@@ -273,6 +292,23 @@ class ConversationDiscoveryManager {
         }, delay)
         this.emitStatus()
         return next
+    }
+
+    configurationChanged() {
+        this.stateStore.clearError()
+        return this.reschedule()
+    }
+
+    async clearObsoleteRouteError() {
+        const persisted = this.stateStore.read()
+        if (persisted.lastError?.message !== AUTOMATIC_CURATION_ROUTE_ERROR) return false
+        const profile = this.profile()
+        if (profile.mode === "off") return false
+        const datasets = arrays(await Promise.resolve(this.listDatasets()))
+        if (!automaticTargetsReady(profile.targets, datasets)) return false
+        this.stateStore.clearError()
+        this.emitStatus()
+        return true
     }
 
     async handleNotification() {
@@ -687,17 +723,20 @@ class ConversationDiscoveryManager {
             throw new Error("Automatic curation is unavailable")
         }
         const currentDatasets = arrays(await Promise.resolve(this.listDatasets()))
+        const currentTargets = arrays(currentProfile.targets)
+        if (
+            currentTargets.length &&
+            !explicitTargetAcceptsSkill(skill, currentDatasets, currentTargets)
+        ) return null
         const dataset = automaticDatasetFor({
             confidence: source.confidence,
             outcome: source.outcome,
             skill,
-        }, currentDatasets, arrays(currentProfile.targets).length
-            ? currentProfile.targets
+        }, currentDatasets, currentTargets.length
+            ? currentTargets
             : currentProfile.datasetId)
         if (!dataset?.activeRubricVersionId) {
-            throw new Error(
-                "Automatic curation requires one compatible Dataset with a published Rubric",
-            )
+            throw new Error(AUTOMATIC_CURATION_ROUTE_ERROR)
         }
         if (!saved?.rawCase?.id) {
             throw new Error("Automatic curation requires a persisted Raw Case")

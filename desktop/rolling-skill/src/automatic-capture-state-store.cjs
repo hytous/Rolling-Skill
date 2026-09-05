@@ -128,6 +128,14 @@ class AutomaticCaptureStateStore {
         return this.read()
     }
 
+    clearError() {
+        const state = this.load()
+        if (state.lastError === null) return this.read()
+        state.lastError = null
+        this.persist()
+        return this.read()
+    }
+
     thread(runtimeId, threadId) {
         const runtime = this.load().runtimes[identifier(runtimeId, "Runtime id")]
         const thread = runtime?.threads?.[identifier(threadId, "Thread id")]

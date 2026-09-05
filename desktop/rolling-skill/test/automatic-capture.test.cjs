@@ -259,6 +259,135 @@ describe("scheduled conversation discovery manager", () => {
         assert.equal(timers, 1)
         manager.stop()
     })
+
+    it("keeps a stale Skill candidate pending when targets change during a scan", async () => {
+        const datasets = [
+            {
+                id: "dataset-systematic",
+                name: "Systematic debugging",
+                activeRubricVersionId: "rubric-systematic",
+                skillReference: {id: "skill-systematic", name: "systematic-debugging"},
+            },
+            {
+                id: "dataset-billing",
+                name: "Billing",
+                activeRubricVersionId: "rubric-billing",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            },
+        ]
+        const created = []
+        let value
+        value = fixture({
+            mode: "automatic",
+            datasets,
+            skills: datasets.map((dataset) => ({...dataset.skillReference, enabled: true})),
+            curationManager: {
+                hiddenThreadIds: () => new Set(),
+                async createSession(input) {
+                    created.push(input)
+                    return {id: "curation-stale", status: "running"}
+                },
+            },
+            runAnalysis: async (input) => {
+                if (input.stage === "boundary") {
+                    return JSON.stringify({
+                        segments: [{
+                            startUserItemId: "thread-1-user-1",
+                            endUserItemId: "thread-1-user-2",
+                            summary: "Debugging request",
+                        }],
+                        pendingStartUserItemId: null,
+                    })
+                }
+                value.settings.autoCaptureProfile.datasetId = "dataset-billing"
+                value.settings.autoCaptureProfile.targets = [{
+                    skillId: "skill-billing",
+                    datasetId: "dataset-billing",
+                }]
+                return JSON.stringify({
+                    eligibleForCase: true,
+                    sourceKind: "human_task",
+                    skillName: "systematic-debugging",
+                    outcome: "unresolved",
+                    caseType: "badcase",
+                    finalAssistantItemId: "thread-1-agent-2",
+                    confidence: 0.94,
+                    reason: "The requested investigation is unfinished.",
+                })
+            },
+        })
+        value.settings.autoCaptureProfile.datasetId = "dataset-systematic"
+        value.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-systematic",
+            datasetId: "dataset-systematic",
+        }]
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.equal(value.candidates.length, 1)
+        assert.equal(value.candidates[0].skill.name, "systematic-debugging")
+        assert.equal(created.length, 0)
+        assert.equal(value.stateStore.read().lastError, null)
+        assert.ok(value.stateStore.read().lastSuccessAt)
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
+            "thread-1-user-2",
+        )
+    })
+
+    it("clears only an obsolete route error when every current target is ready", async () => {
+        const routeError = "Automatic curation requires one compatible Dataset with a published Rubric"
+        const valid = fixture({
+            mode: "automatic",
+            datasets: [{
+                id: "dataset-billing",
+                activeRubricVersionId: "rubric-billing",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            }],
+        })
+        valid.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-billing",
+            datasetId: "dataset-billing",
+        }]
+        valid.stateStore.failSlot(new Error(routeError))
+
+        assert.equal(await valid.manager.clearObsoleteRouteError(), true)
+        assert.equal(valid.manager.status().error, null)
+
+        valid.stateStore.failSlot(new Error("Runtime unavailable"))
+        assert.equal(await valid.manager.clearObsoleteRouteError(), false)
+        assert.equal(valid.manager.status().error, "Runtime unavailable")
+
+        const missingRubric = fixture({
+            mode: "automatic",
+            datasets: [{
+                id: "dataset-billing",
+                activeRubricVersionId: null,
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            }],
+        })
+        missingRubric.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-billing",
+            datasetId: "dataset-billing",
+        }]
+        missingRubric.stateStore.failSlot(new Error(routeError))
+
+        assert.equal(await missingRubric.manager.clearObsoleteRouteError(), false)
+        assert.equal(missingRubric.manager.status().error, routeError)
+    })
+
+    it("clears the previous error and reschedules after an automatic configuration change", () => {
+        const value = fixture({mode: "automatic"})
+        let timers = 0
+        value.manager.setTimer = () => {timers += 1; return timers}
+        value.manager.clearTimer = () => {}
+        value.stateStore.failSlot(new Error("Old automatic error"))
+
+        value.manager.configurationChanged()
+
+        assert.equal(value.manager.status().error, null)
+        assert.equal(timers, 1)
+    })
+
     it("passes only configured candidate Skills to Case detection", async () => {
         const datasets = [
             {

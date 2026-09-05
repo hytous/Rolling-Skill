@@ -18092,6 +18092,7 @@ var require_contracts = __commonJS({
     var publicOptimizationAnalysis = z2.object({
       score: z2.number().finite().min(0).max(100).nullable().optional(),
       scoreDelta: z2.number().finite().min(-100).max(100).nullable().optional(),
+      baselineScoreDelta: z2.number().finite().min(-100).max(100).nullable().optional(),
       passRate: z2.number().finite().min(0).max(1).nullable().optional(),
       regressionCount: z2.number().int().min(0).max(1e5),
       executionFailureCount: z2.number().int().min(0).max(1e5).optional(),
@@ -18299,6 +18300,7 @@ var require_contracts = __commonJS({
       },
       "datasets.create": {
         action: "datasets.write",
+        description: "Create an empty Dataset bound to a managed Skill; this does not copy Cases or a Rubric.",
         input: z2.object({
           name: boundedText(500, "Dataset name"),
           repositoryId: id,
@@ -18306,6 +18308,29 @@ var require_contracts = __commonJS({
           idempotencyKey: id
         }).strict(),
         output: z2.object({ dataset: publicDataset }).strict()
+      },
+      "datasets.clone": {
+        action: "datasets.write",
+        description: "Create a Dataset by atomically copying selected Cases and the active Rubric from a scoped source Dataset.",
+        input: z2.object({
+          sourceDatasetId: id,
+          name: boundedText(500, "Dataset name"),
+          caseIds: z2.array(id).min(1).max(100),
+          idempotencyKey: id
+        }).strict().superRefine((input, context) => {
+          if (new Set(input.caseIds).size !== input.caseIds.length) {
+            context.addIssue({
+              code: "custom",
+              path: ["caseIds"],
+              message: "Dataset Case ids must be unique"
+            });
+          }
+        }),
+        output: z2.object({
+          dataset: publicDataset,
+          cases: z2.array(publicDatasetCase).max(100),
+          rubricCopied: z2.boolean()
+        }).strict()
       },
       "datasets.delete": {
         action: "datasets.delete",
@@ -49049,7 +49074,7 @@ function createOperatorMcpServer(credentials = controlCredentials()) {
       controlToolName(method),
       {
         title: `Rolling Skill ${method}`,
-        description: `Invoke the authenticated Rolling Skill ${method} control method.`,
+        description: definition.description ?? `Invoke the authenticated Rolling Skill ${method} control method.`,
         inputSchema: definition.input,
         outputSchema: definition.output,
         annotations: {

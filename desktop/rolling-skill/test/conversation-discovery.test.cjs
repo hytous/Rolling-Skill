@@ -175,7 +175,11 @@ describe("scheduled conversation discovery helpers", () => {
         assert.deepEqual(parseOutcomeResult(JSON.stringify(rejected), context), rejected)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, skillName: "unknown"}), context), /skill/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, confidence: 1.1}), context), /confidence/i)
-        assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, finalAssistantItemId: "agent-2"}), context), /assistant/i)
+        assert.deepEqual(
+            parseOutcomeResult(JSON.stringify({...valid, finalAssistantItemId: "agent-2"}), context),
+            {...valid, finalAssistantItemId: null},
+            "an invented optional Assistant Item id must fall back to the trusted episode boundary",
+        )
         assert.throws(() => parseOutcomeResult(JSON.stringify({...rejected, skillName: "billing-cost-management"}), context), /ineligible|skill/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...rejected, caseType: "goodcase"}), context), /ineligible|case type/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, extra: true}), context), /schema|field/i)

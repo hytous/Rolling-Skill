@@ -46,6 +46,8 @@ Main Process 在 `settings:update` 中识别 Automatic Capture 相关字段。�
 
 为让当前安装中的历史误报消失，App 启动时若遇到旧版固定路由错误，并且当前显式 targets 全部存在、Skill 绑定一致且有已发布 Rubric，则只清除这条已失效错误。其它 Runtime、Curator 或存储错误不得在启动时自动清除。
 
+真实补跑还发现，Outcome 模型偶尔会把可选的 `finalAssistantItemId` 抄错一个字符。该 ID 只用于在已经冻结的 Episode 内缩短最终边界，不应成为整轮扫描的单点故障。解析器仍拒绝信任不存在的 ID，但把它归一为 `null`，让调用方回退到程序冻结的 `episode.source.endItemId`；同时在提示词中明确要求精确复制现有 `agentMessage` ID，否则返回 `null`。
+
 ## 接口边界
 
 - `automatic-capture.cjs`：判断最新显式路由是否仍接收候选。
@@ -60,4 +62,5 @@ Main Process 在 `settings:update` 中识别 Automatic Capture 相关字段。�
 - 断言 `clearError()` 不改变调度槽和游标，并且重复调用安全。
 - 断言 Automatic Capture 设置变更会清理错误，无关设置不会。
 - 断言启动清理只处理“当前 targets 已全部有效”的旧固定错误。
+- 断言模型返回未知的可选 Assistant Item ID 时不会终止扫描，并回退到可信 Episode 结束边界。
 - 运行 Desktop 全量、DSH/Core 全量和 Renderer smoke，随后打包、签名、安装并确认误报消失。

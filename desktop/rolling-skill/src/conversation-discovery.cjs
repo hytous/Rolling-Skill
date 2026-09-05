@@ -218,7 +218,8 @@ judge the purpose and provenance of the request, not just the product names it m
 human requesting incident triage or a postmortem for a malfunctioning internal tool is a human
 task, even when the affected tool is Rolling Skill; it is not a generated Rubric/Curator/Judge
 instruction. Keep generated orchestration and synthetic test fixtures excluded.
-identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item.
+Identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item. Copy
+finalAssistantItemId exactly from a supplied agentMessage id; use null if no exact id applies.
 Return JSON only with this exact schema:
 {"eligibleForCase":true,"sourceKind":"human_task|rolling_skill_internal|skill_installation|evaluation_or_optimization|other_internal","skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase|null","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
 <candidate-episode>${JSON.stringify(input)}</candidate-episode>`
@@ -272,11 +273,14 @@ function parseOutcomeResult(text, {skillNames = [], assistantItemIds = []} = {})
     if (!value.eligibleForCase && (skillName !== null || caseType !== null)) {
         throw new Error("Ineligible episode cannot select a Skill or Case type")
     }
-    const finalAssistantItemId = value.finalAssistantItemId === null
+    let finalAssistantItemId = value.finalAssistantItemId === null
         ? null
         : requiredText(value.finalAssistantItemId, "Final Assistant Item id")
     if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
-        throw new Error("Outcome result references an unknown Assistant Item id")
+        // This optional locator is model-produced. Never trust an invented id,
+        // but do not fail the whole scan over a transcription error: callers
+        // safely fall back to the already-frozen Episode end boundary.
+        finalAssistantItemId = null
     }
     if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
         throw new Error("Outcome confidence must be between 0 and 1")

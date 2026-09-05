@@ -71,6 +71,8 @@ function fixture({mode = "off", executionLocation = "while-harness-running"} = {
         start: () => calls.push(["start"]),
         stop: () => calls.push(["stop"]),
         reschedule: () => calls.push(["reschedule"]),
+        configurationChanged: () => calls.push(["configurationChanged"]),
+        async clearObsoleteRouteError() {calls.push(["clearObsoleteRouteError"])},
         status: () => ({mode: settings.autoCaptureProfile.mode, nextRunAt: null, running: false, pendingCount: 0, lastSuccessAt: null, error: null}),
         async runSlot(slot, profile) {
             calls.push(["runSlot", slot.toISOString?.() ?? slot, profile.mode])
@@ -212,10 +214,31 @@ describe("Rolling Skill automatic capture composition", () => {
         const host = fixture({mode: "scheduled"})
         host.service.startHostSchedule()
         assert.equal(host.calls.some(([kind]) => kind === "start"), true)
+        assert.equal(host.calls.some(([kind]) => kind === "clearObsoleteRouteError"), true)
 
         const worker = fixture({mode: "scheduled", executionLocation: "always"})
         worker.service.startHostSchedule()
-        assert.deepEqual(worker.calls, [["start"], ["recover"]])
+        assert.deepEqual(worker.calls, [["start"], ["clearObsoleteRouteError"], ["recover"]])
+    })
+
+    it("clears obsolete errors when a running Host accepts new automatic settings", () => {
+        const value = fixture({mode: "scheduled"})
+        value.service.startHostSchedule()
+        value.calls.length = 0
+
+        value.service.update({
+            mode: "scheduled",
+            executionLocation: "while-harness-running",
+            runtimeId: value.runtime.runtimeId,
+            cadence: "weekly",
+            time: "08:30",
+            weekday: 5,
+            modelId: "small-model",
+            effort: "low",
+            datasetId: null,
+        })
+
+        assert.deepEqual(value.calls, [["configurationChanged"]])
     })
 
     it("fails closed before changing settings when the selected Runtime is unavailable", () => {

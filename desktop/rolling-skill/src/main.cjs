@@ -118,6 +118,17 @@ const RENDERER_CAPABILITY_LIFETIME_MS = Math.min(
     MAX_CAPABILITY_LIFETIME_MS,
 )
 const RENDERER_CAPABILITY_REFRESH_MS = 60 * 1_000
+const AUTOMATIC_CAPTURE_SETTING_KEYS = new Set([
+    "autoCapture",
+    "autoCaptureMode",
+    "autoCaptureCadence",
+    "autoCaptureTime",
+    "autoCaptureWeekday",
+    "autoCaptureModelId",
+    "autoCaptureEffort",
+    "autoCaptureDatasetId",
+    "autoCaptureTargets",
+])
 const RENDERER_CONTROL_ACTIONS = Object.freeze([
     "raw_cases.read",
     "raw_cases.write",
@@ -183,6 +194,11 @@ const RENDERER_FORBIDDEN_CONTROL_KEYS = new Set([
     "commit",
     "usage",
 ])
+
+function automaticCaptureSettingsChanged(input) {
+    return Boolean(input) && typeof input === "object" && !Array.isArray(input) &&
+        [...AUTOMATIC_CAPTURE_SETTING_KEYS].some((key) => Object.hasOwn(input, key))
+}
 const CONTROL_AUDIT_LIMIT = 200
 
 let mainWindow = null
@@ -3546,6 +3562,7 @@ function installIpc() {
     )
     ipcMain.handle("datasets:reveal", revealLocalData)
     ipcMain.handle("settings:update", (_event, input) => {
+        const automaticSettingsChanged = automaticCaptureSettingsChanged(input)
         const prepared = input?.autoCaptureTargets === undefined
             ? input
             : {
@@ -3556,7 +3573,8 @@ function installIpc() {
               }
         const settings = store.updateSettings(prepared)
         client?.setExecutionPolicy?.(currentExecutionPolicy())
-        automaticCaptureManager?.reschedule()
+        if (automaticSettingsChanged) automaticCaptureManager?.configurationChanged()
+        else automaticCaptureManager?.reschedule()
         return settings
     })
 
@@ -4063,6 +4081,7 @@ if (!hasLock) {
         client = createClient()
         installIpc()
         installMenu()
+        await automaticCaptureManager.clearObsoleteRouteError().catch(() => false)
         createWindow()
         automaticCaptureManager.start()
         void ensureRuntime().catch((error) => {
