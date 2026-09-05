@@ -469,6 +469,7 @@ class OptimizationRunner {
             }
             const artifact = this.#artifact(jobId, "optimization-evaluation", `${kind}.json`, evaluation, {
                 runId: control.runId,
+                evaluationId: evaluation.id,
                 epoch,
                 kind,
             })

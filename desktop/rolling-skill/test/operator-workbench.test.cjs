@@ -17,6 +17,7 @@ const {
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
     optimizationPanelView,
+    optimizationFlowTreeView,
     optimizationUserSummaryView,
     optimizationFinalApproval,
     optimizationFinalApprovalView,
@@ -303,6 +304,7 @@ describe("Operator workbench state", () => {
         assert.match(markup, /id="operator-optimization-phase"/u)
         assert.match(markup, /id="operator-optimization-progress"/u)
         assert.match(markup, /id="operator-optimization-direction-summary"/u)
+        assert.match(markup, /id="operator-optimization-flow"/u)
         assert.match(markup, /id="operator-optimization-result"/u)
         assert.match(markup, /id="operator-optimization-decision"/u)
         assert.match(markup, /<details id="operator-technical-details"[^>]*>/u)
@@ -391,6 +393,10 @@ describe("Operator workbench state", () => {
             {kind: "installation", id: "installation-1", label: "Installation installation-1"},
             {kind: "installation", id: "installation-2", label: "Installation installation-2"},
         ])
+        assert.deepEqual(artifactDeepLinks({
+            kind: "optimization-evaluation",
+            metadata: {runId: "optimization-run-is-not-an-evaluation"},
+        }), [])
     })
 
     it("upserts Jobs and deduplicates repeated event envelopes by stable identity", async () => {
@@ -1418,7 +1424,7 @@ describe("Operator workbench coordination", () => {
         replacement.destroy()
     })
 
-    it("keeps dynamic action rendering listener-free with only three fixed delegated listeners", () => {
+    it("keeps dynamic action rendering listener-free with only four fixed delegated listeners", () => {
         const source = fs.readFileSync(require.resolve("../renderer/operator-workbench.js"), "utf8")
         const dynamicRender = source.slice(
             source.indexOf("function patchStatus"),
@@ -1430,6 +1436,7 @@ describe("Operator workbench coordination", () => {
             artifacts: fakeEventTarget(),
             approvals: fakeEventTarget(),
             sessionActions: fakeEventTarget(),
+            optimizationFlow: fakeEventTarget(),
         }
         const scope = createOperatorDomListenerScope()
         registerOperatorActionDelegates({
@@ -1437,12 +1444,12 @@ describe("Operator workbench coordination", () => {
             containers,
             getActiveSnapshot: () => null,
         })
-        assert.equal(scope.registrationCount, 3)
+        assert.equal(scope.registrationCount, 4)
         for (let index = 0; index < 10_000; index += 1) {
             const oldButton = fakeActionButton("[data-operator-entity-kind]", {operatorEntityKind: "dataset"})
             assert.equal(oldButton.listenerCount("click"), 0)
         }
-        assert.equal(scope.registrationCount, 3)
+        assert.equal(scope.registrationCount, 4)
 
         scope.destroy()
         const replacement = createOperatorDomListenerScope()
@@ -1451,8 +1458,8 @@ describe("Operator workbench coordination", () => {
             containers,
             getActiveSnapshot: () => null,
         })
-        assert.equal(replacement.registrationCount, 3)
-        assert.deepEqual(Object.values(containers).map((target) => target.listenerCount("click")), [1, 1, 1])
+        assert.equal(replacement.registrationCount, 4)
+        assert.deepEqual(Object.values(containers).map((target) => target.listenerCount("click")), [1, 1, 1, 1])
         replacement.destroy()
     })
 
@@ -1461,6 +1468,7 @@ describe("Operator workbench coordination", () => {
             artifacts: fakeEventTarget(),
             approvals: fakeEventTarget(),
             sessionActions: fakeEventTarget(),
+            optimizationFlow: fakeEventTarget(),
         }
         let snapshot = {
             job: {id: "job-1", status: "running", childJobIds: ["job-child"]},
@@ -1482,6 +1490,16 @@ describe("Operator workbench coordination", () => {
             listen: scope.listen,
             containers,
             getActiveSnapshot: () => snapshot,
+            getActiveOptimizationRun: () => ({
+                id: "optimization-run-1",
+                state: "baseline",
+                currentEpoch: 0,
+                checkpoint: {
+                    activeEvaluationRunId: "evaluation-optimization-1",
+                    activeEvaluationKind: "baseline",
+                },
+                epochs: [],
+            }),
             onSelectEntity: (...args) => calls.push(["entity", ...args]),
             onResolveApproval: (...args) => calls.push(["approval", ...args]),
             onApproveCurrentJob: (...args) => calls.push(["approve-job", ...args]),
@@ -1503,6 +1521,16 @@ describe("Operator workbench coordination", () => {
             operatorEntityKind: "case",
             operatorEntityId: "forged-case",
             operatorArtifactId: "artifact-new",
+        }))
+
+        const flowSelector = "[data-optimization-entity-kind][data-optimization-entity-id]"
+        containers.optimizationFlow.dispatch("click", fakeActionButton(flowSelector, {
+            optimizationEntityKind: "evaluation",
+            optimizationEntityId: "evaluation-optimization-1",
+        }))
+        containers.optimizationFlow.dispatch("click", fakeActionButton(flowSelector, {
+            optimizationEntityKind: "evaluation",
+            optimizationEntityId: "forged-evaluation",
         }))
 
         const approvalSelector = "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]"
@@ -1548,6 +1576,7 @@ describe("Operator workbench coordination", () => {
         await new Promise((resolve) => setImmediate(resolve))
         assert.deepEqual(calls.map((entry) => entry.slice(0, 3)), [
             ["entity", "dataset", "dataset-new"],
+            ["entity", "evaluation", "evaluation-optimization-1"],
             ["approval", "approval-1", "approve"],
             ["approve-job", "job-1"],
             ["control", "job-1", "pause"],
@@ -1750,6 +1779,182 @@ describe("multi-Epoch Optimization workbench", () => {
             limits: {maxEpochs: 3},
             epochs: [],
         }).action, "recovery")
+    })
+
+    it("derives the live optimization state-machine node with exact evaluation links", () => {
+        const tree = optimizationFlowTreeView({
+            state: "evaluating",
+            currentEpoch: 1,
+            limits: {maxEpochs: 5},
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-baseline",
+                activeEvaluationRunId: "evaluation-candidate-1",
+                activeEvaluationKind: "candidate",
+            },
+            epochs: [{
+                number: 1,
+                status: "evaluating",
+                candidateArtifactId: "candidate-artifact-1",
+                installArtifactIds: ["installation-artifact-1"],
+                evaluationArtifactIds: [],
+                evaluationRunIds: [],
+            }],
+        })
+
+        assert.deepEqual(tree.map((node) => [node.key, node.status]), [
+            ["prepare", "completed"],
+            ["baseline", "completed"],
+            ["epoch", "active"],
+            ["approval", "pending"],
+            ["release", "pending"],
+            ["restore", "pending"],
+            ["finish", "pending"],
+        ])
+        assert.deepEqual(tree[1].entity, {kind: "evaluation", id: "evaluation-baseline"})
+        assert.deepEqual(tree[2].children.map((node) => [node.key, node.status]), [
+            ["edit", "completed"],
+            ["install", "completed"],
+            ["evaluate", "active"],
+            ["decide", "pending"],
+        ])
+        assert.deepEqual(tree[2].children[2].entity, {
+            kind: "evaluation",
+            id: "evaluation-candidate-1",
+        })
+    })
+
+    it("keeps an identified baseline active until evaluation completes", () => {
+        const tree = optimizationFlowTreeView({
+            state: "baseline",
+            currentEpoch: 0,
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-baseline-live",
+                activeEvaluationRunId: "evaluation-baseline-live",
+                activeEvaluationKind: "baseline",
+            },
+            epochs: [],
+        })
+
+        assert.equal(tree[1].status, "active")
+        assert.deepEqual(tree[1].entity, {
+            kind: "evaluation",
+            id: "evaluation-baseline-live",
+        })
+    })
+
+    it("opens the active retry instead of an older evaluation from the same Epoch", () => {
+        const tree = optimizationFlowTreeView({
+            state: "evaluating",
+            currentEpoch: 1,
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-baseline",
+                activeEvaluationRunId: "evaluation-candidate-retry",
+                activeEvaluationKind: "candidate",
+            },
+            epochs: [{
+                number: 1,
+                status: "evaluating",
+                candidateArtifactId: "candidate-artifact-1",
+                installArtifactIds: ["installation-artifact-1"],
+                evaluationArtifactIds: ["evaluation-artifact-old"],
+                evaluationRunIds: ["evaluation-candidate-old"],
+            }],
+        })
+
+        assert.deepEqual(tree[2].children[2].entity, {
+            kind: "evaluation",
+            id: "evaluation-candidate-retry",
+        })
+    })
+
+    it("marks the interrupted baseline red and leaves unreached nodes pending", () => {
+        const tree = optimizationFlowTreeView({
+            state: "needs_recovery",
+            currentEpoch: 0,
+            limits: {maxEpochs: 3},
+            checkpoint: {
+                paused: true,
+                activeEvaluationRunId: "evaluation-interrupted",
+                activeEvaluationKind: "baseline",
+            },
+            epochs: [],
+        })
+
+        assert.deepEqual(tree.map((node) => [node.key, node.status]), [
+            ["prepare", "completed"],
+            ["baseline", "failed"],
+            ["epoch", "pending"],
+            ["approval", "pending"],
+            ["release", "pending"],
+            ["restore", "pending"],
+            ["finish", "pending"],
+        ])
+        assert.deepEqual(tree[1].entity, {kind: "evaluation", id: "evaluation-interrupted"})
+        assert.equal(tree[2].number, 1)
+        assert.equal(tree[2].children.every((node) => node.status === "pending"), true)
+    })
+
+    it("distinguishes an incomplete baseline from a preflight failure", () => {
+        const incompleteBaseline = optimizationFlowTreeView({
+            state: "failed",
+            currentEpoch: 0,
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-incomplete",
+                activeEvaluationKind: "baseline",
+            },
+            epochs: [],
+        })
+        const preflightFailure = optimizationFlowTreeView({
+            state: "failed",
+            currentEpoch: 0,
+            checkpoint: {},
+            epochs: [],
+        })
+
+        assert.deepEqual(incompleteBaseline.slice(0, 2).map((node) => node.status), [
+            "completed",
+            "failed",
+        ])
+        assert.deepEqual(preflightFailure.slice(0, 2).map((node) => node.status), [
+            "failed",
+            "pending",
+        ])
+    })
+
+    it("shows completed evaluation and release evidence for a successful optimization", () => {
+        const tree = optimizationFlowTreeView({
+            state: "succeeded",
+            currentEpoch: 1,
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-baseline",
+                finalApprovalId: "approval-1",
+                releasePhase: "installed",
+                releasedVersionId: "version-2",
+                releasedInstallArtifactId: "released-installation-1",
+            },
+            epochs: [{
+                number: 1,
+                status: "succeeded",
+                candidateArtifactId: "candidate-artifact-1",
+                installArtifactIds: ["installation-artifact-1"],
+                evaluationArtifactIds: ["evaluation-artifact-1"],
+                evaluationRunIds: ["evaluation-candidate-1"],
+                decisionArtifactId: "decision-artifact-1",
+            }],
+        })
+
+        assert.equal(tree[2].status, "completed")
+        assert.equal(tree[2].children.every((node) => node.status === "completed"), true)
+        assert.deepEqual(tree[2].children[2].entity, {
+            kind: "evaluation",
+            id: "evaluation-candidate-1",
+        })
+        assert.deepEqual(tree.slice(3).map((node) => [node.key, node.status]), [
+            ["approval", "completed"],
+            ["release", "completed"],
+            ["restore", "pending"],
+            ["finish", "completed"],
+        ])
     })
 
     it("disables forward actions while restoring and exposes exact recovery targets", () => {

@@ -214,6 +214,10 @@ function publicDecision(value) {
 
 function publicEpoch(epoch, readArtifact) {
     const candidate = publicCandidate(boundedArtifactValue(readArtifact, epoch.candidateArtifactId))
+    const evaluationRunIds = [...new Set((epoch.evaluationArtifactIds ?? [])
+        .slice(0, 64)
+        .map((artifactId) => boundedArtifactValue(readArtifact, artifactId)?.id)
+        .filter((evaluationId) => typeof evaluationId === "string" && evaluationId.length > 0))]
     const installationArtifacts = (epoch.installArtifactIds ?? [])
         .slice(0, 64)
         .map((artifactId) => boundedArtifactValue(readArtifact, artifactId))
@@ -232,6 +236,7 @@ function publicEpoch(epoch, readArtifact) {
         candidateArtifactId: epoch.candidateArtifactId ?? null,
         installArtifactIds: structuredClone(epoch.installArtifactIds ?? []),
         evaluationArtifactIds: structuredClone(epoch.evaluationArtifactIds ?? []),
+        evaluationRunIds,
         analysisArtifactId: epoch.analysisArtifactId ?? null,
         decisionArtifactId: epoch.decisionArtifactId ?? null,
         ...(candidate ? {candidate} : {}),

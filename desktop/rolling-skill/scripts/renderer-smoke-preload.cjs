@@ -477,7 +477,10 @@ function smokeOptimizationBase(config) {
             digest: `sha256:${"a".repeat(64)}`,
         },
         epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
-        checkpoint: {paused: false},
+        checkpoint: {
+            paused: false,
+            baselineEvaluationRunId: "run-smoke",
+        },
         error: null,
     }
 }
@@ -493,6 +496,10 @@ function advanceSmokeOptimization() {
             number: 1,
             status: "completed",
             candidateArtifactId: "candidate-artifact-1",
+            installArtifactIds: ["install-artifact-1"],
+            evaluationArtifactIds: ["evaluation-artifact-1"],
+            evaluationRunIds: ["run-smoke"],
+            decisionArtifactId: "decision-artifact-1",
             candidate: {versionId: "candidate-smoke-1", commit: "c".repeat(40), contentDigest: `sha256:${"c".repeat(64)}`},
             installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-1", lastVerifiedDigest: `sha256:${"c".repeat(64)}`}],
             analysis: {score: 82, scoreDelta: 8, baselineScoreDelta: 0, passRate: 0.75, regressionCount: 1},
@@ -501,6 +508,10 @@ function advanceSmokeOptimization() {
             number: 2,
             status: "completed",
             candidateArtifactId: "candidate-artifact-2",
+            installArtifactIds: ["install-artifact-2"],
+            evaluationArtifactIds: ["evaluation-artifact-2"],
+            evaluationRunIds: ["run-smoke"],
+            decisionArtifactId: "decision-artifact-2",
             candidate: {versionId: "candidate-smoke-2", commit: "d".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`},
             installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-2", lastVerifiedDigest: `sha256:${"d".repeat(64)}`}],
             analysis: {score: 94, scoreDelta: 12, baselineScoreDelta: 12, passRate: 1, regressionCount: 0},
@@ -508,6 +519,7 @@ function advanceSmokeOptimization() {
         }]
         smokeOptimizationRun.checkpoint = {
             telemetry: {elapsedMs: 2_000, turnsUsed: 12, tokens: 4_000, costMicros: 2_000},
+            baselineEvaluationRunId: "run-smoke",
         }
     }
     return structuredClone(smokeOptimizationRun)
@@ -1350,6 +1362,21 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         const created = await invokeOperator("create-optimization-approval", {runId: smokeOptimizationRun.id})
         smokeOptimizationRun.checkpoint.finalApprovalId = created.approval.id
         emitOperator(operatorChangedListeners, created.changed)
+        return structuredClone(smokeOptimizationRun)
+    },
+    smokeInterruptOptimization: async () => {
+        smokeOptimizationRun = {
+            ...smokeOptimizationRun,
+            state: "needs_recovery",
+            revision: smokeOptimizationRun.revision + 1,
+            currentEpoch: 0,
+            epochs: [],
+            checkpoint: {
+                paused: true,
+                activeEvaluationRunId: "run-smoke",
+                activeEvaluationKind: "baseline",
+            },
+        }
         return structuredClone(smokeOptimizationRun)
     },
     smokeFailNextOptimizationStart: () => {

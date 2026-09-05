@@ -655,6 +655,7 @@ const publicOptimizationEpoch = z.object({
     candidateArtifactId: id.nullable(),
     installArtifactIds: z.array(id).max(512).optional(),
     evaluationArtifactIds: z.array(id).max(512).optional(),
+    evaluationRunIds: z.array(id).max(512).optional(),
     analysisArtifactId: id.nullable().optional(),
     decisionArtifactId: id.nullable().optional(),
     candidate: publicOptimizationCandidate.optional(),

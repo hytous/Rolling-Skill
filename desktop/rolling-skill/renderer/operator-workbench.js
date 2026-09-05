@@ -348,6 +348,144 @@
         }
     }
 
+    function optimizationEvaluationEntity(...evaluationIds) {
+        const id = evaluationIds.find((value) => typeof value === "string" && value.length > 0)
+        return id ? {kind: "evaluation", id} : undefined
+    }
+
+    function optimizationFlowTreeView(run = {}) {
+        const state = run.state ?? "preflight"
+        const checkpoint = run.checkpoint ?? {}
+        const currentEpoch = Number.isSafeInteger(run.currentEpoch) ? run.currentEpoch : 0
+        const hasBaseline = typeof checkpoint.baselineEvaluationRunId === "string" &&
+            checkpoint.baselineEvaluationRunId.length > 0
+        const baselineWasStarted = hasBaseline || checkpoint.activeEvaluationKind === "baseline"
+        const interrupted = state === "needs_recovery"
+        const baselineInterrupted = interrupted && (
+            currentEpoch === 0 || checkpoint.activeEvaluationKind === "baseline"
+        )
+        const prepare = {
+            key: "prepare",
+            status: state === "preflight" ? "active" : "completed",
+        }
+        if (new Set(["failed", "cancelled"]).has(state) && currentEpoch === 0 && !baselineWasStarted) {
+            prepare.status = state === "failed" ? "failed" : "cancelled"
+        }
+        const baseline = {
+            key: "baseline",
+            status: state === "baseline"
+                ? "active"
+                : hasBaseline ? "completed" : "pending",
+            entity: optimizationEvaluationEntity(
+                checkpoint.baselineEvaluationRunId,
+                checkpoint.activeEvaluationKind === "baseline"
+                    ? checkpoint.activeEvaluationRunId
+                    : null,
+            ),
+        }
+        if (baselineInterrupted) baseline.status = "failed"
+        if (state === "failed" && currentEpoch === 0) {
+            baseline.status = baselineWasStarted ? "failed" : "pending"
+        }
+
+        const storedEpochs = Array.isArray(run.epochs) ? run.epochs : []
+        const epochInputs = storedEpochs.length ? storedEpochs : [{number: 1, status: "pending"}]
+        const epochNodes = epochInputs.map((epoch) => {
+            const number = Number.isSafeInteger(epoch.number) ? epoch.number : 1
+            const isCurrent = number === currentEpoch
+            const evaluationEntity = optimizationEvaluationEntity(
+                isCurrent && checkpoint.activeEvaluationKind === "candidate"
+                    ? checkpoint.activeEvaluationRunId
+                    : null,
+                Array.isArray(epoch.evaluationRunIds) ? epoch.evaluationRunIds.at(-1) : null,
+            )
+            const children = [
+                {
+                    key: "edit",
+                    status: epoch.candidateArtifactId || epoch.candidate ? "completed" : "pending",
+                },
+                {
+                    key: "install",
+                    status: (epoch.installArtifactIds?.length || epoch.installations?.length)
+                        ? "completed"
+                        : "pending",
+                },
+                {
+                    key: "evaluate",
+                    status: (epoch.evaluationArtifactIds?.length || epoch.evaluationRunIds?.length)
+                        ? "completed"
+                        : "pending",
+                    entity: evaluationEntity,
+                },
+                {
+                    key: "decide",
+                    status: epoch.decisionArtifactId || epoch.decision ||
+                        new Set(["completed", "succeeded"]).has(epoch.status)
+                        ? "completed"
+                        : "pending",
+                },
+            ]
+            const liveKey = isCurrent && !(state === "installing" && checkpoint.releasePhase)
+                ? ({
+                    editing: "edit",
+                    installing: "install",
+                    evaluating: "evaluate",
+                    deciding: "decide",
+                })[state]
+                : null
+            if (liveKey) {
+                const live = children.find((child) => child.key === liveKey)
+                if (live) live.status = "active"
+            }
+            let status = children.every((child) => child.status === "completed")
+                ? "completed"
+                : children.some((child) => child.status === "active") ? "active" : "pending"
+            if (interrupted && isCurrent && !baselineInterrupted && !checkpoint.recoveryTargets?.length) {
+                const unfinished = children.find((child) => child.status !== "completed")
+                if (unfinished) unfinished.status = "failed"
+                status = "failed"
+            }
+            return {key: "epoch", number, status, children}
+        })
+
+        const finalApprovalDone = Boolean(checkpoint.finalApprovalId) &&
+            !new Set(["waiting_approval", "needs_recovery"]).has(state)
+        const approval = {
+            key: "approval",
+            status: state === "waiting_approval"
+                ? "active"
+                : finalApprovalDone ? "completed" : "pending",
+        }
+        if (interrupted && checkpoint.resumePhase === "final_approval") approval.status = "failed"
+        const releaseCompleted = state === "succeeded" || checkpoint.releasePhase === "installed" ||
+            Boolean(checkpoint.releasedInstallArtifactId)
+        const release = {
+            key: "release",
+            status: releaseCompleted
+                ? "completed"
+                : state === "installing" && checkpoint.releasePhase ? "active" : "pending",
+        }
+        const recoveryProblem = interrupted && Array.isArray(checkpoint.recoveryTargets) &&
+            checkpoint.recoveryTargets.length > 0
+        const restore = {
+            key: "restore",
+            status: recoveryProblem
+                ? "failed"
+                : state === "restoring"
+                    ? "active"
+                    : new Set(["failed", "cancelled"]).has(state) && currentEpoch > 0
+                        ? "completed"
+                        : "pending",
+        }
+        const finish = {
+            key: "finish",
+            status: state === "succeeded"
+                ? "completed"
+                : state === "failed" ? "failed" : state === "cancelled" ? "cancelled" : "pending",
+        }
+        return [prepare, baseline, ...epochNodes, approval, release, restore, finish]
+    }
+
     function optimizationFinalApproval(snapshot = {}) {
         if (!snapshot?.job?.id) return null
         const jobIds = operatorJobTreeIds(snapshot)
@@ -529,10 +667,13 @@
             metadata.installationId,
             ...(Array.isArray(metadata.installationIds) ? metadata.installationIds.slice(0, 100) : []),
         ]
+        const evaluationId = metadata.evaluationId ?? (
+            artifact.kind === "optimization-evaluation" ? null : metadata.runId
+        )
         const candidates = [
             ["dataset", metadata.datasetId, "operatorArtifactDataset", "Dataset"],
             ["case", metadata.caseId, "operatorArtifactCase", "Case"],
-            ["evaluation", metadata.evaluationId ?? metadata.runId, "operatorArtifactEvaluation", "Evaluation"],
+            ["evaluation", evaluationId, "operatorArtifactEvaluation", "Evaluation"],
             ["candidate", metadata.candidateId ?? metadata.versionId, "operatorArtifactCandidate", "Candidate"],
             ...installationIds.map((id) => ["installation", id, "operatorArtifactInstallation", "Installation"]),
         ]
@@ -1520,6 +1661,7 @@
         const listen = options.listen
         const containers = options.containers ?? {}
         const getActiveSnapshot = options.getActiveSnapshot ?? (() => null)
+        const getActiveOptimizationRun = options.getActiveOptimizationRun ?? (() => null)
         const onSelectEntity = options.onSelectEntity ?? (() => {})
         const onResolveApproval = options.onResolveApproval ?? (() => {})
         const onApproveCurrentJob = options.onApproveCurrentJob ?? (() => {})
@@ -1577,6 +1719,23 @@
             const action = button.dataset.operatorJobAction
             if (!operatorJobActions(snapshot.job.status).includes(action)) return
             void onControlJob(snapshot.job.id, action)
+        })
+
+        listen(containers.optimizationFlow, "click", (event) => {
+            const button = event?.target?.closest?.(
+                "[data-optimization-entity-kind][data-optimization-entity-id]",
+            )
+            const run = getActiveOptimizationRun()
+            if (!button || !run) return
+            const kind = button.dataset.optimizationEntityKind
+            const id = button.dataset.optimizationEntityId
+            const nodes = optimizationFlowTreeView(run)
+                .flatMap((node) => [node, ...(node.children ?? [])])
+            if (!nodes.some((node) => node.entity?.kind === kind && node.entity.id === id)) return
+            onSelectEntity(kind, id, {
+                optimizationRunId: run.id,
+                source: "optimization-flow",
+            })
         })
     }
 
@@ -1966,6 +2125,7 @@
             optimizationProgress: root.querySelector("#operator-optimization-progress"),
             optimizationStatusCopy: root.querySelector("#operator-optimization-status-copy"),
             optimizationDirectionSummary: root.querySelector("#operator-optimization-direction-summary"),
+            optimizationFlow: root.querySelector("#operator-optimization-flow"),
             optimizationResult: root.querySelector("#operator-optimization-result"),
             optimizationDecision: root.querySelector("#operator-optimization-decision"),
             optimizationFrozen: root.querySelector("#operator-optimization-frozen"),
@@ -2536,6 +2696,88 @@
             container.append(metric)
         }
 
+        function optimizationFlowLabel(node) {
+            if (node.key === "epoch") return message(
+                "operatorFlowEpoch",
+                {value: node.number},
+                "Epoch {value}",
+            )
+            const labels = {
+                prepare: ["operatorFlowPrepare", "Prepare"],
+                baseline: ["operatorFlowBaseline", "Baseline evaluation"],
+                edit: ["operatorFlowEdit", "Improve Skill"],
+                install: ["operatorFlowInstall", "Install candidate"],
+                evaluate: ["operatorFlowEvaluate", "Complete evaluation"],
+                decide: ["operatorFlowDecide", "Review and decide"],
+                approval: ["operatorFlowApproval", "Final approval"],
+                release: ["operatorFlowRelease", "Publish and install improved version"],
+                restore: ["operatorFlowRestore", "Restore original version when needed"],
+                finish: ["operatorFlowFinish", "Finish"],
+            }
+            const [key, fallback] = labels[node.key] ?? ["operatorFlowUnknown", node.key]
+            return text(key, fallback)
+        }
+
+        function optimizationFlowStatusLabel(status) {
+            const labels = {
+                completed: ["operatorFlowStatusCompleted", "Completed"],
+                active: ["operatorFlowStatusActive", "In progress"],
+                failed: ["operatorFlowStatusFailed", "Needs attention"],
+                cancelled: ["operatorFlowStatusCancelled", "Stopped"],
+                pending: ["operatorFlowStatusPending", "Not started"],
+            }
+            const [key, fallback] = labels[status] ?? labels.pending
+            return text(key, fallback)
+        }
+
+        function renderOptimizationFlowNode(node, nested = false) {
+            const label = optimizationFlowLabel(node)
+            const item = createElement(
+                document_,
+                "div",
+                `operator-flow-node ${nested ? "nested " : ""}${node.status}`,
+            )
+            item.dataset.optimizationNodeStatus = node.status
+            item.setAttribute("role", "treeitem")
+            item.setAttribute("aria-label", `${label}：${optimizationFlowStatusLabel(node.status)}`)
+            if (node.status === "active") item.setAttribute("aria-current", "step")
+            const row = createElement(document_, "div", "operator-flow-row")
+            const symbols = {completed: "✓", active: "", failed: "!", cancelled: "–", pending: ""}
+            row.append(
+                createElement(document_, "span", "operator-flow-marker", symbols[node.status] ?? ""),
+                createElement(document_, "span", "operator-flow-label", label),
+            )
+            if (node.entity) {
+                const link = createElement(
+                    document_,
+                    "button",
+                    "operator-flow-link",
+                    text("operatorFlowOpenEvaluation", "View this evaluation"),
+                )
+                link.type = "button"
+                link.dataset.optimizationEntityKind = node.entity.kind
+                link.dataset.optimizationEntityId = node.entity.id
+                row.append(link)
+            }
+            item.append(row)
+            if (node.children?.length) {
+                const children = createElement(document_, "div", "operator-flow-children")
+                children.setAttribute("role", "group")
+                for (const child of node.children) {
+                    children.append(renderOptimizationFlowNode(child, true))
+                }
+                item.append(children)
+            }
+            return item
+        }
+
+        function renderOptimizationFlow(run) {
+            selectors.optimizationFlow.replaceChildren()
+            for (const node of optimizationFlowTreeView(run)) {
+                selectors.optimizationFlow.append(renderOptimizationFlowNode(node))
+            }
+        }
+
         function renderOptimizationPanel(run) {
             selectors.optimizationPanel.classList.toggle("hidden", !run)
             if (!run) {
@@ -2547,6 +2789,7 @@
                 ]) section.classList.add("hidden")
                 delete selectors.technicalDetails.dataset.optimizationRunId
                 selectors.technicalDetails.open = true
+                selectors.optimizationFlow.replaceChildren()
                 return
             }
             const view = optimizationPanelView(run)
@@ -2571,6 +2814,7 @@
                 {value: summary.direction ?? text("operatorSystemOptimization", "comprehensive system optimization")},
                 "Priority: {value}",
             )
+            renderOptimizationFlow(run)
             selectors.optimizationResult.replaceChildren()
             if (summary.latestResult) {
                 const result = summary.latestResult
@@ -3465,8 +3709,13 @@
                 artifacts: selectors.artifacts,
                 approvals: selectors.approvals,
                 sessionActions: selectors.sessionActions,
+                optimizationFlow: selectors.optimizationFlow,
             },
             getActiveSnapshot: () => state.getSnapshot(state.activeJobId),
+            getActiveOptimizationRun: () => {
+                const snapshot = state.getSnapshot(state.activeJobId)
+                return snapshot ? optimizationRunForSnapshot(snapshot) : null
+            },
             onSelectEntity,
             onResolveApproval: resolveApproval,
             onApproveCurrentJob: approveCurrentJob,
@@ -3605,6 +3854,7 @@
         createOperatorWorkbench,
         createOperatorWorkbenchState,
         optimizationPanelView,
+        optimizationFlowTreeView,
         optimizationUserSummaryView,
         optimizationFinalApproval,
         optimizationFinalApprovalView,

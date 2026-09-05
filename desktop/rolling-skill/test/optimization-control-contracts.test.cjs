@@ -173,6 +173,7 @@ describe("optimization control contracts", () => {
 
     it("preserves the bounded baseline score delta needed by the final user comparison", () => {
         const output = directedRunOutput("waiting_approval")
+        output.run.epochs[0].evaluationRunIds = ["evaluation-run-1"]
         output.run.epochs[0].analysis = {
             score: 94,
             scoreDelta: 12,
@@ -183,6 +184,7 @@ describe("optimization control contracts", () => {
 
         const parsed = parseControlOutput("optimization.get", output)
         assert.equal(parsed.run.epochs[0].analysis.baselineScoreDelta, 12)
+        assert.deepEqual(parsed.run.epochs[0].evaluationRunIds, ["evaluation-run-1"])
     })
 
     it("accepts compact Epoch-only start and preflight inputs above the old 100-Epoch cap", () => {

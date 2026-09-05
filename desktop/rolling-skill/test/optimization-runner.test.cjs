@@ -760,6 +760,20 @@ describe("multi-Epoch OptimizationRunner", () => {
             "candidate",
             "candidate",
         ])
+        assert.deepEqual(
+            fixture.artifacts
+                .filter((artifact) => artifact.kind === "optimization-evaluation")
+                .map((artifact) => ({
+                    runId: artifact.metadata.runId,
+                    evaluationId: artifact.metadata.evaluationId,
+                    kind: artifact.metadata.kind,
+                })),
+            [
+                {runId: fixture.run.id, evaluationId: "evaluation-1", kind: "baseline"},
+                {runId: fixture.run.id, evaluationId: "evaluation-2", kind: "candidate"},
+                {runId: fixture.run.id, evaluationId: "evaluation-3", kind: "candidate"},
+            ],
+        )
         assert.equal(fixture.operatorGateway.candidateRequests, 2)
         assert.equal(fixture.operatorGateway.decisionRequests, 2)
         assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release-install"])

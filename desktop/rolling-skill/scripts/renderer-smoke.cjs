@@ -2238,6 +2238,8 @@ async function run() {
         phase: document.querySelector("#operator-optimization-phase")?.textContent ?? "",
         progress: document.querySelector("#operator-optimization-progress")?.textContent ?? "",
         direction: document.querySelector("#operator-optimization-direction-summary")?.textContent ?? "",
+        flowStatuses: [...document.querySelectorAll("#operator-optimization-flow [data-optimization-node-status]")]
+            .map((node) => node.dataset.optimizationNodeStatus),
         technicalOpen: document.querySelector("#operator-technical-details")?.open ?? null,
         genericApprovalHidden: document.querySelector("#operator-approval-queue")
             ?.closest("section")?.classList.contains("hidden") ?? false,
@@ -2256,6 +2258,9 @@ async function run() {
         !optimizationChrome.phase.includes("改进") ||
         !optimizationChrome.progress.includes("1/5") ||
         !optimizationChrome.direction.includes("重点改善异常下钻") ||
+        !optimizationChrome.flowStatuses.includes("completed") ||
+        !optimizationChrome.flowStatuses.includes("active") ||
+        !optimizationChrome.flowStatuses.includes("pending") ||
         optimizationChrome.technicalOpen !== false ||
         !optimizationChrome.genericApprovalHidden ||
         optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
@@ -2263,6 +2268,21 @@ async function run() {
         !optimizationChrome.actions[2].includes("operator-action-danger")
     ) {
         throw new Error(`Optimization title or action styles are inconsistent: ${JSON.stringify(optimizationChrome)}`)
+    }
+    await inspect(window, "window.rollingSkill.smokeInterruptOptimization()")
+    await waitFor(window, `document.querySelector(
+        "#operator-optimization-flow [data-optimization-node-status=failed]"
+    )?.textContent.includes("基线评测")`)
+    const interruptedOptimizationFlow = await inspect(window, `(() => ({
+        failed: document.querySelectorAll(
+            "#operator-optimization-flow [data-optimization-node-status=failed]"
+        ).length,
+        pending: document.querySelectorAll(
+            "#operator-optimization-flow [data-optimization-node-status=pending]"
+        ).length,
+    }))()`)
+    if (interruptedOptimizationFlow.failed !== 1 || interruptedOptimizationFlow.pending < 1) {
+        throw new Error(`Interrupted Optimization flow is not explicit: ${JSON.stringify(interruptedOptimizationFlow)}`)
     }
     await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
     await waitFor(window, `document.querySelector(${JSON.stringify(`${streamingJobSelector}.active`)})`)
@@ -2317,6 +2337,14 @@ async function run() {
         optimizationEvidenceAfterSwitch.release !== optimizationEvidenceBeforeSwitch.release) {
         throw new Error("Optimization install result or score trend did not survive task switching")
     }
+
+    await inspect(window, `document.querySelector(
+        "#operator-optimization-flow [data-optimization-entity-id=run-smoke]"
+    ).click()`)
+    await waitFor(window, `document.querySelector("[data-surface=evaluation]").classList.contains("active") &&
+        document.querySelector("[data-evaluation-run-id=run-smoke]").classList.contains("active")`)
+    await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
+    await waitFor(window, `document.querySelector(${JSON.stringify(`${optimizationJobSelector}.active`)})`)
 
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
     await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
@@ -2476,6 +2504,8 @@ async function run() {
             optimizationTaskTitle: optimizationChrome.sessionTitle,
             operatorActionButtons: optimizationChrome.actions,
             optimizationHiddenProgressIsolated: true,
+            optimizationInterruptedFlow: interruptedOptimizationFlow,
+            optimizationEvaluationDeepLink: "run-smoke",
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
             optimizationFinalApproval: finalApprovalId,
             optimizationFormalInstall: "released-install-smoke",

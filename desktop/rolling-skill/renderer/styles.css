@@ -1104,6 +1104,106 @@ kbd {
     line-height: 1.4;
 }
 
+.operator-optimization-flow {
+    display: grid;
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    gap: 4px;
+}
+
+.operator-flow-node {
+    min-width: 0;
+}
+
+.operator-flow-row {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    min-height: 24px;
+    gap: 7px;
+}
+
+.operator-flow-marker {
+    display: grid;
+    width: 14px;
+    height: 14px;
+    place-items: center;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--surface-raised);
+    color: var(--accent-ink);
+    font-size: 9px;
+    font-weight: 760;
+    line-height: 1;
+}
+
+.operator-flow-label {
+    min-width: 0;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.35;
+}
+
+.operator-flow-node.completed > .operator-flow-row > .operator-flow-marker {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.operator-flow-node.completed > .operator-flow-row > .operator-flow-label {
+    color: var(--text);
+}
+
+.operator-flow-node.active > .operator-flow-row > .operator-flow-marker {
+    border: 4px solid color-mix(in srgb, var(--success) 25%, var(--surface));
+    background: var(--success);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+.operator-flow-node.active > .operator-flow-row > .operator-flow-label {
+    color: var(--success);
+    font-weight: 720;
+}
+
+.operator-flow-node.failed > .operator-flow-row > .operator-flow-marker {
+    border-color: var(--danger);
+    background: var(--danger);
+}
+
+.operator-flow-node.failed > .operator-flow-row > .operator-flow-label {
+    color: var(--danger);
+    font-weight: 720;
+}
+
+.operator-flow-node.cancelled > .operator-flow-row > .operator-flow-marker {
+    border-color: var(--muted);
+    background: var(--muted);
+}
+
+.operator-flow-children {
+    display: grid;
+    margin: 2px 0 4px 7px;
+    padding-left: 15px;
+    border-left: 1px solid var(--border);
+    gap: 2px;
+}
+
+.operator-flow-link {
+    padding: 2px 5px;
+    border: 0;
+    background: transparent;
+    color: var(--accent-strong);
+    font-size: 9px;
+    font-weight: 650;
+    white-space: nowrap;
+}
+
+.operator-flow-link:hover {
+    background: var(--accent-soft);
+}
+
 .operator-optimization-result {
     display: grid;
     margin-top: 12px;

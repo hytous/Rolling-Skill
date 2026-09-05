@@ -542,6 +542,11 @@ describe("Optimization control service", () => {
                 improved: [{caseId: "case-2", runtimeId: "codex:target"}],
             }),
         })
+        context.artifactBodies.set("evaluation-1", JSON.stringify({
+            id: "evaluation-run-1",
+            status: "completed",
+            results: [{rawResult: "must not reach Renderer"}],
+        }))
         context.artifactBodies.set("decision-1", JSON.stringify({
             action: "continue",
             rationale: "继续处理回归",
@@ -603,6 +608,7 @@ describe("Optimization control service", () => {
             action: "continue",
             rationale: "继续处理回归",
         })
+        assert.deepEqual(output.run.epochs[0].evaluationRunIds, ["evaluation-run-1"])
         assert.deepEqual(output.run.checkpoint.recoveryTargets, [{
             runtimeId: "codex:target",
             status: "needs_recovery",
@@ -612,7 +618,7 @@ describe("Optimization control service", () => {
             lastVerifiedDigest: digest("c"),
         }])
         assert.equal(output.run.checkpoint.telemetry, undefined)
-        assert.ok(context.artifactReadLimits.length >= 4)
+        assert.ok(context.artifactReadLimits.length >= 5)
         assert.ok(context.artifactReadLimits.every(({maximumBytes}) => maximumBytes === 1024 * 1024))
         assert.doesNotMatch(JSON.stringify(output), /workspacePath|rawResult|observations/u)
     })
