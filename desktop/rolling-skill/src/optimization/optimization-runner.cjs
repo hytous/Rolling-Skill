@@ -307,6 +307,7 @@ class OptimizationRunner {
                 initialTargets: clone(run.checkpoint.initialTargets ?? null),
                 currentCandidate: candidates.length ? this.#readArtifact(candidates.at(-1).candidateArtifactId) : null,
                 previousCandidate: candidates.length > 1 ? this.#readArtifact(candidates.at(-2).candidateArtifactId) : null,
+                detachedRecovery: true,
             }
             const operation = this.#restore(restored, "cancelled", new Error("Optimization cancelled by user"))
                 .finally(() => this.controls.delete(runId))
@@ -521,7 +522,7 @@ class OptimizationRunner {
         previousCandidate = null,
         targetRuntimeIds = null,
     ) {
-        return this.#child(control, `optimization_${operation}`, `Run ${operation} for Epoch ${epoch}`, async ({jobId}) => {
+        const execute = async (jobId = null) => {
             const snapshot = this.store.getRun(control.runId).snapshot
             const selectedRuntimeIds = targetRuntimeIds === null
                 ? null
@@ -562,12 +563,20 @@ class OptimizationRunner {
                 this.store.updateCheckpoint(control.runId, {installationPending: false})
                 this.onChanged({runId: control.runId})
             }
+            if (jobId === null) return {jobs: completed}
             const artifact = this.#artifact(jobId, "optimization-installation", `${operation}-${epoch}.json`, {
                 operation,
                 jobs: completed,
             }, {runId: control.runId, epoch, operation})
             return {jobs: completed, artifact}
-        })
+        }
+        if (control.detachedRecovery === true) return execute()
+        return this.#child(
+            control,
+            `optimization_${operation}`,
+            `Run ${operation} for Epoch ${epoch}`,
+            ({jobId}) => execute(jobId),
+        )
     }
 
     async #requestDecision(control, context) {
@@ -903,6 +912,22 @@ class OptimizationRunner {
                 return {jobs: completed, artifact}
             },
         )
+        if (formalInstallation?.status === "cancelled") {
+            control.cancelRequested = true
+            control.detachedRecovery = true
+            return this.#restore(
+                control,
+                "cancelled",
+                Object.assign(new Error("Released installation was cancelled"), {
+                    code: "OPTIMIZATION_CANCELLED",
+                }),
+            )
+        }
+        if (!formalInstallation?.artifact?.id) {
+            throw Object.assign(new Error("Released installation completed without an audit Artifact"), {
+                code: "OPTIMIZATION_INSTALL_FAILED",
+            })
+        }
         this.store.updateCheckpoint(control.runId, {
             releasePhase: "installed",
             releasedInstallArtifactId: formalInstallation.artifact.id,

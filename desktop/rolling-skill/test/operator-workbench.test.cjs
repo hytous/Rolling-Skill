@@ -2014,6 +2014,10 @@ describe("multi-Epoch Optimization workbench", () => {
             state: "needs_recovery",
             checkpoint: {paused: true},
         }), ["resume", "stop", "report"])
+        assert.deepEqual(optimizationRunActions({
+            state: "needs_recovery",
+            checkpoint: {},
+        }), ["stop", "report"])
         assert.equal(recovering.recoveryTargets[0].installationJobId, "install-9")
         assert.match(recovering.recoveryTargets[0].lastVerifiedDigest, /^sha256:/u)
     })

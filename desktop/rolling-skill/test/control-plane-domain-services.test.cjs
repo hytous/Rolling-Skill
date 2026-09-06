@@ -273,6 +273,7 @@ function fixture(overrides = {}) {
     }
     return {
         dependencies,
+        operatorJobs,
         rawCaseStore,
         evaluationStore,
         evaluationRunner,
@@ -389,6 +390,26 @@ describe("control-plane domain services", () => {
         assert.equal(stopped.job.status, "cancelled")
         assert.deepEqual(operatorJobEngine.cancel.mock.calls[0].arguments, ["job-child"])
         assert.equal(operatorSessionManager.stop.mock.callCount(), 0)
+    })
+
+    it("routes a root Optimization stop through its restore-aware controller", async () => {
+        const optimizationControlService = {
+            stop: mock.fn(async () => ({id: "optimization-1", state: "restoring"})),
+        }
+        const {dependencies, operatorJobs, operatorSessionManager} = fixture({
+            optimizationControlService,
+        })
+        operatorJobs[0].optimizationRunId = "optimization-1"
+        const services = createDomainServices(dependencies)
+
+        const stopped = await services["jobs.stop"]({
+            jobId: "job-1",
+            idempotencyKey: "stop-optimization-root",
+        }, serviceContext())
+
+        assert.deepEqual(optimizationControlService.stop.mock.calls[0].arguments, ["optimization-1"])
+        assert.equal(operatorSessionManager.stop.mock.callCount(), 0)
+        assert.equal(stopped.job.status, "running")
     })
 
     it("lets a branded Renderer human control an explicitly selected Operator Job across sessions", async () => {

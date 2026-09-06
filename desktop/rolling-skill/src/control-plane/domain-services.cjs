@@ -1593,6 +1593,17 @@ function createDomainServices(dependencies = {}) {
                 context.grant,
             ))}
         }
+        if (
+            operation === "stop" && job.optimizationRunId &&
+            typeof optimizationControlService?.stop === "function"
+        ) {
+            await optimizationControlService.stop(job.optimizationRunId)
+            return {job: publicOperatorJob(requireOperatorJob(
+                job.id,
+                context.sessionId,
+                context.grant,
+            ))}
+        }
         if (typeof operatorSessionManager?.[operation] !== "function") {
             throw new Error("Operator session control unavailable")
         }

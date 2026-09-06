@@ -10,6 +10,7 @@ const EXPERIMENT_OPERATIONS = new Set([
     "experiment_remove",
     "experiment_inspect",
 ])
+const EXPERIMENT_RECOVERY_OPERATIONS = new Set(["experiment_restore", "experiment_remove"])
 const OPERATIONS = new Set([...ORDINARY_OPERATIONS, ...EXPERIMENT_OPERATIONS])
 const CLASSIFICATIONS = new Set([
     "absent",
@@ -198,7 +199,10 @@ function freezeSkillExperimentRequest(input = {}) {
         throw new Error("Optimization baseline does not match the frozen Run")
     }
 
-    if (input.candidate?.state !== "candidate" || input.candidate?.createdBy !== "optimization") {
+    const candidateStateAllowed = input.candidate?.state === "candidate" || (
+        EXPERIMENT_RECOVERY_OPERATIONS.has(operation) && input.candidate?.state === "released"
+    )
+    if (!candidateStateAllowed || input.candidate?.createdBy !== "optimization") {
         throw new Error("Optimization experiment requires an immutable optimization Candidate")
     }
     const source = versionSource(input.candidate, "Optimization Candidate")

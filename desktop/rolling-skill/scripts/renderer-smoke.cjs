@@ -2243,6 +2243,9 @@ async function run() {
         technicalOpen: document.querySelector("#operator-technical-details")?.open ?? null,
         genericApprovalHidden: document.querySelector("#operator-approval-queue")
             ?.closest("section")?.classList.contains("hidden") ?? false,
+        genericSessionActionCount: document.querySelectorAll(
+            "#operator-session-actions [data-operator-job-action]",
+        ).length,
         actions: [
             document.querySelector("#operator-composer-send"),
             document.querySelector("[data-optimization-action=pause]"),
@@ -2263,6 +2266,7 @@ async function run() {
         !optimizationChrome.flowStatuses.includes("pending") ||
         optimizationChrome.technicalOpen !== false ||
         !optimizationChrome.genericApprovalHidden ||
+        optimizationChrome.genericSessionActionCount !== 0 ||
         optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
         !optimizationChrome.actions[0].includes("primary") ||
         !optimizationChrome.actions[2].includes("operator-action-danger")

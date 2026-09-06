@@ -600,6 +600,62 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
         assert.equal(fixture.installationCalls.length, 0)
     })
+    it("restores a detached cancelled Run without its terminal Operator parent", async () => {
+        const fixture = runnerFixture()
+        fixture.approvals.request = async (input) => ({
+            approved: input.kind !== "release-install",
+            approvalId: "approval-rejected-before-detached-recovery",
+        })
+        const originalStart = fixture.installationManager.startOptimizationExperiment.bind(
+            fixture.installationManager,
+        )
+        let failRestore = true
+        fixture.installationManager.startOptimizationExperiment = async (input) => {
+            const jobs = await originalStart(input)
+            if (failRestore && input.operation === "experiment_restore") {
+                for (const job of jobs) {
+                    fixture.installationJobs.get(job.id).status = "needs_recovery"
+                }
+            }
+            return jobs
+        }
+
+        const interrupted = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        assert.equal(interrupted.status, "needs_recovery")
+        failRestore = false
+        fixture.childJobs.run = async () => {
+            throw new Error("The Operator parent is already cancelled")
+        }
+
+        const stopped = await fixture.runner.stop(fixture.run.id)
+
+        assert.equal(stopped.status, "cancelled")
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
+        assert.equal(fixture.installationCalls.at(-1).operation, "experiment_restore")
+    })
+    it("restores when a Released-install child returns a cancellation receipt", async () => {
+        const fixture = runnerFixture()
+        const runChild = fixture.childJobs.run.bind(fixture.childJobs)
+        fixture.childJobs.run = async (input, operation) => {
+            if (input.type === "optimization_released_install") {
+                return {status: "cancelled", jobId: "cancelled-released-install"}
+            }
+            return runChild(input, operation)
+        }
+
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.equal(outcome.status, "cancelled")
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
+        assert.equal(fixture.store.getRun(fixture.run.id).error.code, "OPTIMIZATION_CANCELLED")
+        assert.equal(fixture.installationCalls.at(-1).operation, "experiment_restore")
+    })
     it("preserves an incomplete baseline and stops before changing the Skill when Judge is unavailable", async () => {
         const failed = evaluation("baseline-capacity-error", 70)
         failed.results[0].gradingStatus = "failed"

@@ -281,7 +281,8 @@
         if (run.state === "restoring") return ["report"]
         if (run.state === "waiting_approval") return ["report"]
         if (run.state === "needs_recovery") {
-            return run.checkpoint?.paused === true ? ["resume", "stop", "report"] : ["report"]
+            if (run.checkpoint?.paused === true) return ["resume", "stop", "report"]
+            return run.checkpoint?.recoveryTargets?.length ? ["report"] : ["stop", "report"]
         }
         if (run.state === "paused") {
             return ["resume", "stop", "report"]
@@ -3399,6 +3400,7 @@
 
         function renderSessionActions(snapshot) {
             selectors.sessionActions.replaceChildren()
+            if (snapshot.job.optimizationRunId) return
             const labels = {
                 pause: text("operatorPause", "Pause"),
                 resume: text("operatorResume", "Resume"),

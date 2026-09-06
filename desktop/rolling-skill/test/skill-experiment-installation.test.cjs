@@ -178,6 +178,27 @@ describe("Optimization Candidate experiment installation", () => {
         assert.equal(managed.experiment.restoration.source.expectedDigest, digest("b"))
     })
 
+    it("restores from an optimization version after the Candidate was released", () => {
+        const facts = managedFacts()
+        const releasedCandidate = {
+            ...facts.candidate,
+            state: "released",
+            releasedAt: "2026-09-06T09:08:52.808Z",
+        }
+        const request = experimentRequest({
+            operation: "experiment_restore",
+            candidate: releasedCandidate,
+            initial: initialManaged(facts),
+        })
+
+        assert.equal(request.operation, "experiment_restore")
+        assert.equal(request.source.versionId, releasedCandidate.id)
+        assert.equal(request.experiment.restoration.source.versionId, facts.baseline.id)
+        assert.throws(() => experimentRequest({
+            candidate: releasedCandidate,
+        }), /immutable optimization Candidate/u)
+    })
+
     it("accepts a positive safe Epoch above the former product cap", () => {
         const facts = managedFacts()
         const request = experimentRequest({
