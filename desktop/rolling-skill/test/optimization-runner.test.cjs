@@ -1001,6 +1001,11 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(result.status, "failed")
         const run = fixture.store.getRun(fixture.run.id)
         assert.match(run.error.message, /Management marker is truncated/u)
+        assert.equal(
+            fixture.store.transitions.includes("restoring"),
+            false,
+            "read-only preflight failure must not pretend that a version was restored",
+        )
         assert.equal(run.checkpoint.installationPending, false)
         assert.deepEqual(run.checkpoint.installationJobIds, ["installation-1"])
         assert.deepEqual(fixture.installationCalls.map((call) => call.operation), ["experiment_inspect"])

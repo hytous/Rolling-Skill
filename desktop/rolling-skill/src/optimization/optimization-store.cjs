@@ -1374,6 +1374,19 @@ class OptimizationStore {
             if (state.runs.some((entry) => entry.id === run.id)) {
                 throw new Error("Optimization run id already exists")
             }
+            const targetRuntimeIds = new Set(frozen.targets.map((target) => target.runtimeId))
+            const overlap = state.runs.find((entry) => (
+                !TERMINAL_STATES.has(entry.state) &&
+                entry.snapshot.baseline.skillId === frozen.baseline.skillId &&
+                entry.snapshot.targets.some((target) => targetRuntimeIds.has(target.runtimeId))
+            ))
+            if (overlap) {
+                const error = new Error(
+                    "该 Skill 在所选 Runtime 上还有未完成的自动优化任务，请先完成或停止该任务。",
+                )
+                error.code = "OPTIMIZATION_TARGET_BUSY"
+                throw error
+            }
             state.runs.push(run)
             const result = canonicalRunMutationResult({
                 runId: run.id,

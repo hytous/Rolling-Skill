@@ -1932,6 +1932,28 @@ describe("multi-Epoch Optimization workbench", () => {
         ])
     })
 
+    it("leaves restore pending when a read-only candidate inspection fails", () => {
+        const tree = optimizationFlowTreeView({
+            state: "failed",
+            currentEpoch: 1,
+            checkpoint: {
+                baselineEvaluationRunId: "evaluation-baseline",
+                installationOperation: "experiment_inspect",
+            },
+            epochs: [{
+                number: 1,
+                status: "failed",
+                candidateArtifactId: "candidate-artifact",
+                installArtifactIds: [],
+                evaluationArtifactIds: [],
+            }],
+        })
+
+        assert.equal(tree[2].children.find((node) => node.key === "install").status, "failed")
+        assert.equal(tree[2].status, "failed")
+        assert.equal(tree.find((node) => node.key === "restore").status, "pending")
+    })
+
     it("shows completed evaluation and release evidence for a successful optimization", () => {
         const tree = optimizationFlowTreeView({
             state: "succeeded",

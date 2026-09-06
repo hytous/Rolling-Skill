@@ -923,12 +923,7 @@ class OptimizationRunner {
                     status: terminalState === "cancelled" ? "cancelled" : "failed",
                 })
             }
-            if (run.state === "baseline" || run.state === "preflight") {
-                this.#transition(control, terminalState, null, errorRecord(cause))
-            } else {
-                this.#transition(control, "restoring", null, errorRecord(cause))
-                this.#transition(control, terminalState)
-            }
+            this.#transition(control, terminalState, null, errorRecord(cause))
             return {runId: control.runId, status: terminalState, error: errorRecord(cause)}
         }
         try {

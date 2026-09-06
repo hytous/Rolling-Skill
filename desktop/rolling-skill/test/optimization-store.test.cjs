@@ -139,6 +139,24 @@ function waitForChildText(child, pattern, label) {
 }
 
 describe("OptimizationStore", () => {
+    it("keeps creation idempotent but rejects overlapping unfinished Skill targets", () => {
+        const {store} = fixture()
+        const snapshot = frozenRun()
+        const first = store.createRun(snapshot, {idempotencyKey: "first-start"})
+        assert.deepEqual(store.createRun(snapshot, {idempotencyKey: "first-start"}), first)
+
+        assert.throws(
+            () => store.createRun(snapshot, {idempotencyKey: "overlapping-start"}),
+            (error) => error?.code === "OPTIMIZATION_TARGET_BUSY" &&
+                /未完成|unfinished/iu.test(error.message),
+        )
+        store.transitionRun(first.runId, "failed")
+        assert.notEqual(
+            store.createRun(snapshot, {idempotencyKey: "after-terminal"}).runId,
+            first.runId,
+        )
+    })
+
     it("persists and creates positive safe Epoch numbers above the old product cap", () => {
         const {path, store} = fixture()
         const created = store.createRun(frozenRun({limits: {maxEpochs: 101}}, {legacy: false}))
@@ -590,6 +608,7 @@ describe("OptimizationStore", () => {
             idempotencyKey: "create:stable-receipt",
         }), created)
 
+        restarted.transitionRun(created.runId, "failed")
         const unkeyed = restarted.createRun(frozenRun())
         assert.deepEqual(Object.keys(unkeyed).sort(), ["revision", "runId", "state", "updatedAt"])
     })
@@ -800,6 +819,8 @@ describe("OptimizationStore", () => {
         store.transitionRun(run.runId, "waiting_approval")
         assert.equal(store.transitionRun(run.runId, "installing").state, "installing")
         assert.equal(store.transitionRun(run.runId, "restoring").state, "restoring")
+        store.updateEpoch(run.runId, epoch.epochId, {status: "failed"})
+        store.transitionRun(run.runId, "failed")
 
         const stopped = store.createRun(frozenRun())
         store.transitionRun(stopped.runId, "baseline")

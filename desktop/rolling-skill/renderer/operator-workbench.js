@@ -441,6 +441,10 @@
                 .some((field) => epoch.analysis?.[field] > 0)) {
                 children.find((child) => child.key === "evaluate").status = "failed"
             }
+            if (state === "failed" && isCurrent && epoch.status === "failed") {
+                const failedStep = children.find((child) => child.status !== "completed")
+                if (failedStep) failedStep.status = "failed"
+            }
             let status = children.every((child) => child.status === "completed")
                 ? "completed"
                 : children.some((child) => child.status === "active") ? "active"
@@ -472,13 +476,15 @@
         }
         const recoveryProblem = interrupted && Array.isArray(checkpoint.recoveryTargets) &&
             checkpoint.recoveryTargets.length > 0
+        const restoreAttempted = new Set(["experiment_restore", "experiment_remove"])
+            .has(checkpoint.installationOperation)
         const restore = {
             key: "restore",
             status: recoveryProblem
                 ? "failed"
                 : state === "restoring"
                     ? "active"
-                    : new Set(["failed", "cancelled"]).has(state) && currentEpoch > 0
+                    : new Set(["failed", "cancelled"]).has(state) && restoreAttempted
                         ? "completed"
                         : "pending",
         }
