@@ -1842,6 +1842,17 @@ describe("multi-Epoch Optimization workbench", () => {
         })
     })
 
+    it("does not mark a partially failed evaluation as completed at final approval", () => {
+        const tree = optimizationFlowTreeView({
+            state: "waiting_approval", currentEpoch: 1,
+            epochs: [{number: 1, candidateArtifactId: "candidate", installArtifactIds: ["install"],
+                evaluationRunIds: ["partial-evaluation"], decision: {action: "pause"},
+                analysis: {executionFailureCount: 1}}],
+        })
+        assert.equal(tree[2].children.find((node) => node.key === "evaluate").status, "failed")
+        assert.equal(tree[2].status, "failed")
+    })
+
     it("opens the active retry instead of an older evaluation from the same Epoch", () => {
         const tree = optimizationFlowTreeView({
             state: "evaluating",

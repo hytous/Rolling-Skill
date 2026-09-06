@@ -437,9 +437,14 @@
                 const live = children.find((child) => child.key === liveKey)
                 if (live) live.status = "active"
             }
+            if (liveKey !== "evaluate" && ["executionFailureCount", "gradingFailureCount", "missingScoreCount"]
+                .some((field) => epoch.analysis?.[field] > 0)) {
+                children.find((child) => child.key === "evaluate").status = "failed"
+            }
             let status = children.every((child) => child.status === "completed")
                 ? "completed"
-                : children.some((child) => child.status === "active") ? "active" : "pending"
+                : children.some((child) => child.status === "active") ? "active"
+                    : children.some((child) => child.status === "failed") ? "failed" : "pending"
             if (interrupted && isCurrent && !baselineInterrupted && !checkpoint.recoveryTargets?.length) {
                 const unfinished = children.find((child) => child.status !== "completed")
                 if (unfinished) unfinished.status = "failed"

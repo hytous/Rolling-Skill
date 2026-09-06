@@ -16,6 +16,7 @@ const {
 } = require("node:fs")
 const {basename, dirname, isAbsolute, join, resolve} = require("node:path")
 const {normalizeOperatorBudget} = require("./operator-budget.cjs")
+const {approvalHasExpired} = require("./approval-expiry.cjs")
 
 const LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
 const V2_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2"
@@ -2137,7 +2138,7 @@ class OperatorJobStore {
             if (!job || job.status !== "waiting_approval") {
                 throw new Error("Operator approval Job status must remain waiting_approval")
             }
-            if (decisionInput.decision === "approve" && Date.parse(approval.expiresAt) <= Date.now()) {
+            if (decisionInput.decision === "approve" && approvalHasExpired(approval)) {
                 throw new Error("Operator approval has expired")
             }
             approval.status = decisionInput.decision === "approve" ? "approved" : "rejected"

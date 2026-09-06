@@ -232,8 +232,11 @@ function managedVersionSummary(version) {
         "contentDigest",
         "state",
         "versionLabel",
+        "title",
         "createdBy",
         "optimizationRoundId",
+        "optimizationRunId",
+        "optimizationEpoch",
         "createdAt",
         "releasedAt",
         "deprecatedAt",
@@ -1947,6 +1950,7 @@ function createDomainServices(dependencies = {}) {
             const version = await managedSkillManager.createCandidate({
                 skillId: input.skillId,
                 message: input.message,
+                ...(input.title ? {title: input.title} : {}),
                 createdBy: "operator",
                 ...(approvedFacts?.method === "skills.create_candidate" ? {
                     expectedBase: {

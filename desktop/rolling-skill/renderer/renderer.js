@@ -5725,7 +5725,7 @@ function managedInstallMatrixFor(runtimeId) {
 
 function managedVersionDisplay(versionId) {
     const version = state.managedSkills.versions.find((entry) => entry.id === versionId)
-    return version?.versionLabel ?? version?.commit?.slice(0, 8) ?? versionId
+    return version?.title || version?.versionLabel || version?.commit?.slice(0, 8) || versionId
 }
 
 function renderManagedInstallRuntime(configuration) {
@@ -5996,7 +5996,7 @@ function renderManagedSkillInstallations() {
             const option = node(
                 "option",
                 "",
-                `${version.versionLabel ?? version.commit.slice(0, 8)} · ${version.commit.slice(0, 8)}`,
+                `${version.title || version.versionLabel || version.commit.slice(0, 8)} · ${version.commit.slice(0, 8)}`,
             )
             option.value = version.id
             elements.managedInstallVersion.append(option)
@@ -6290,7 +6290,7 @@ function renderSkillManagementWorkbench() {
         const card = node("article", "managed-version-card")
         const heading = node("div", "managed-version-heading")
         heading.append(
-            node("strong", "", version.versionLabel ?? version.commit.slice(0, 8)),
+            node("strong", "", version.title || version.versionLabel || (version.optimizationRunId ? "Skill 改进版" : version.commit.slice(0, 8))),
             node("span", `managed-version-status ${status.className}`, status.label),
         )
         card.append(
@@ -6298,6 +6298,9 @@ function renderSkillManagementWorkbench() {
             node("code", "managed-version-commit", version.commit),
             node("small", "", new Date(version.releasedAt ?? version.createdAt).toLocaleString(state.settings.language)),
         )
+        if (version.optimizationRunId) {
+            card.append(node("small", "", `所属优化任务 ${version.optimizationRunId.slice(0, 8)} · Epoch ${version.optimizationEpoch}`))
+        }
         const actions = node("div", "managed-version-actions")
         if (version.state === "candidate") {
             const release = node("button", "primary", t("releaseVersion"))

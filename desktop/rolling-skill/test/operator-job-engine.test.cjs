@@ -78,6 +78,21 @@ function createUncertainStep(store, job, request) {
 }
 
 describe("Operator Job engine", () => {
+    it("does not expire the immutable final optimization review during background sweeps", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            action: "optimization.release-install", scope: {versionId: "frozen-version"},
+            proposedMutation: {method: "optimization.approval"},
+            risk: "final review", expiresAt: "2000-01-01T00:00:00.000Z",
+        })
+        const engine = new OperatorJobEngine({store, invoke: async () => ({})})
+        assert.deepEqual(await engine.expireApprovals(job.id), [])
+        assert.equal(store.getApproval(approval.id).status, "pending")
+    })
+
     it("projects only method-specific stable entity IDs into public artifact metadata", () => {
         assert.deepEqual(operatorArtifactMetadata("datasets.get", {
             dataset: {

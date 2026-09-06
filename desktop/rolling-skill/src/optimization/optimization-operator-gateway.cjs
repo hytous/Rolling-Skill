@@ -90,7 +90,8 @@ class OptimizationOperatorGateway {
 
     submitCandidate(input) {
         const message = requiredText(input?.message, "Optimization Candidate message", 2_000)
-        return this.#submit(input, "candidate", {message})
+        const title = input?.title ? requiredText(input.title, "Candidate title", 80) : null
+        return this.#submit(input, "candidate", {message, ...(title ? {title} : {})})
     }
 
     submitDecision(input) {

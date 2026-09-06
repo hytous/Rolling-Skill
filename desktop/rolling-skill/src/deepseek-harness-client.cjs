@@ -6,6 +6,10 @@ const {tmpdir} = require("node:os")
 const {dirname, isAbsolute, join} = require("node:path")
 
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
+const {
+    clearEvaluationTimeout,
+    evaluationTimeoutMs,
+} = require("./evaluation-timeout.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
@@ -1587,7 +1591,7 @@ class DeepSeekHarnessClient extends EventEmitter {
     waitForCompletedTurn(threadId, timeoutMs, onTimeout) {
         let cleanup = () => {}
         const promise = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timeout = timeoutMs === null ? null : setTimeout(() => {
                 cleanup()
                 onTimeout()
                 reject(new Error("The DeepSeek Harness turn timed out"))
@@ -1614,7 +1618,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                 reject(new Error("The DeepSeek Harness runtime stopped before completion"))
             }
             cleanup = () => {
-                clearTimeout(timeout)
+                clearEvaluationTimeout(timeout)
                 this.off("notification", onNotification)
                 this.off("state", onState)
             }
@@ -1638,7 +1642,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.on("notification", activityListener)
         const completion = this.waitForCompletedTurn(
             threadId,
-            input.timeoutMs ?? 30 * 60 * 1000,
+            evaluationTimeoutMs(input),
             () => void this.interruptTurn(threadId).catch(() => {}),
         )
         try {

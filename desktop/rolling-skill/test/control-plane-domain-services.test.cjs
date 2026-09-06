@@ -621,11 +621,13 @@ describe("control-plane domain services", () => {
             repositoryId: "repository-1",
             skillId: "skill-1",
             message: "Improve billing",
+            title: "改进账单查询",
             idempotencyKey: "candidate-1",
         }, serviceContext())
         assert.deepEqual(managedSkillManager.createCandidate.mock.calls[0].arguments[0], {
             skillId: "skill-1",
             message: "Improve billing",
+            title: "改进账单查询",
             createdBy: "operator",
         })
         assert.equal(candidate.version.repositoryId, "repository-1")

@@ -6,6 +6,10 @@ const {version: clientVersion} = require("../package.json")
 
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
+const {
+    clearEvaluationTimeout,
+    startEvaluationTimeout,
+} = require("./evaluation-timeout.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
@@ -621,7 +625,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         let lastActivityAt = new Date().toISOString()
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timeout = startEvaluationTimeout(input, () => {
                 cleanup()
                 try {
                     void Promise.resolve(this.interruptTurn(threadId)).catch(() => {})
@@ -637,7 +641,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                     startedAt,
                     lastActivityAt,
                 }))
-            }, input.timeoutMs ?? 30 * 60 * 1000)
+            })
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
@@ -657,7 +661,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                 reject(new Error("The evaluation runtime stopped before completion"))
             }
             cleanup = () => {
-                clearTimeout(timeout)
+                clearEvaluationTimeout(timeout)
                 this.off("notification", onNotification)
                 this.off("state", onState)
             }
@@ -710,7 +714,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         let turnId = null
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timeout = startEvaluationTimeout(input, () => {
                 cleanup()
                 try {
                     void Promise.resolve(this.interruptTurn(threadId)).catch(() => {})
@@ -718,7 +722,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                     // The timeout result remains authoritative if the ACP process already stopped.
                 }
                 reject(new Error("The evaluation Judge turn timed out"))
-            }, input.timeoutMs ?? 30 * 60 * 1000)
+            })
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
@@ -741,7 +745,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                 reject(new Error("The evaluation Judge runtime stopped before completion"))
             }
             cleanup = () => {
-                clearTimeout(timeout)
+                clearEvaluationTimeout(timeout)
                 this.off("notification", onNotification)
                 this.off("state", onState)
             }

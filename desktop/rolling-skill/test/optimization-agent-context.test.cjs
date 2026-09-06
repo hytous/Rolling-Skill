@@ -85,6 +85,7 @@ describe("optimization Agent context", () => {
         assert.match(objective, /skill-1/u)
         assert.match(objective, /dataset-1/u)
         assert.match(objective, /rubric-1/u)
+        assert.match(objective, /不要创建或委派给子 Agent/u)
 
         const candidate = optimizationRequestMessage({
             run,
@@ -96,6 +97,8 @@ describe("optimization Agent context", () => {
         assert.match(candidate, /重点改善异常下钻/u)
         assert.match(candidate, /从用户视角理解完整 Skill/u)
         assert.match(candidate, /optimization\.submit_candidate/u)
+        assert.match(candidate, /title.*简洁中文/u)
+        assert.match(candidate, /Do not create or delegate to subagents/u)
         assert.match(candidate, /Missing required field/u)
         assert.match(candidate, /"omittedResults":/u)
         assert.doesNotMatch(candidate, /must not enter prompt/u)

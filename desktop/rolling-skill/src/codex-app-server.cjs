@@ -7,6 +7,10 @@ const {version: clientVersion} = require("../package.json")
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {CONTROL_METHODS, publicControlError} = require("./control-plane/contracts.cjs")
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
+const {
+    clearEvaluationTimeout,
+    startEvaluationTimeout,
+} = require("./evaluation-timeout.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
@@ -945,7 +949,7 @@ class CodexAppServerClient extends EventEmitter {
         let lastActivityAt = new Date().toISOString()
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timeout = startEvaluationTimeout(input, () => {
                 cleanup()
                 if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {})
                 reject(evaluationTurnError("The evaluation turn timed out", {
@@ -957,7 +961,7 @@ class CodexAppServerClient extends EventEmitter {
                     startedAt,
                     lastActivityAt,
                 }))
-            }, input.timeoutMs ?? 30 * 60 * 1000)
+            })
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
@@ -993,7 +997,7 @@ class CodexAppServerClient extends EventEmitter {
                 reject(new Error("The evaluation runtime stopped before completion"))
             }
             cleanup = () => {
-                clearTimeout(timeout)
+                clearEvaluationTimeout(timeout)
                 this.off("notification", onNotification)
                 this.off("state", onState)
             }
@@ -1043,11 +1047,11 @@ class CodexAppServerClient extends EventEmitter {
         let responseText = ""
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+            const timeout = startEvaluationTimeout(input, () => {
                 cleanup()
                 if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {})
                 reject(new Error("The evaluation Judge turn timed out"))
-            }, input.timeoutMs ?? 30 * 60 * 1000)
+            })
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
@@ -1082,7 +1086,7 @@ class CodexAppServerClient extends EventEmitter {
                 reject(new Error("The evaluation Judge runtime stopped before completion"))
             }
             cleanup = () => {
-                clearTimeout(timeout)
+                clearEvaluationTimeout(timeout)
                 this.off("notification", onNotification)
                 this.off("state", onState)
             }

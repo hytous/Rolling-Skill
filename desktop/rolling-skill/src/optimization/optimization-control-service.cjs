@@ -592,6 +592,7 @@ class OptimizationControlService {
         const accepted = this.operatorGateway.submitCandidate({
             runId: input.runId,
             message: input.message,
+            ...(input.title ? {title: input.title} : {}),
             operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}

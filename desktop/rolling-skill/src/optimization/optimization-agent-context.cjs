@@ -108,6 +108,8 @@ function optimizationTaskObjective(run) {
             maxEpochs: context.maxEpochs,
         })}`,
         "请在控制器提供的隔离工作区内按下列冻结方法工作。每轮只修改当前 Skill；候选版本创建、安装、完整评测和最终审批由控制器负责。",
+        "不要创建或委派给子 Agent；完整阅读、修改、测试和复核都由当前优化 Agent 自己完成。",
+        "提交候选时填写 title：用简洁中文概括本版改进，例如‘修正预算比例与实例排名’，不要用 UUID、提交哈希或通用的 Candidate Epoch 标题。",
         context.playbook.content,
         "等待控制器发送当前 Candidate 或 Decision 阶段的评测证据和 Tool 调用要求。",
     ].join("\n\n")
@@ -115,7 +117,7 @@ function optimizationTaskObjective(run) {
 
 function phaseInstruction(kind) {
     if (kind === "candidate") {
-        return "Read the complete Skill and supplied evidence, make a generalizable improvement in the isolated worktree, self-check it, then call optimization.submit_candidate with a concise factual change summary. Do not submit an unchanged worktree, commit, publish, install, change evaluation inputs, or hard-code Case answers; the controller handles version creation, installation, and evaluation."
+        return "Read the complete Skill and supplied evidence, make a generalizable improvement in the isolated worktree, self-check it, then call optimization.submit_candidate with a concise factual change summary. 填写 title：用简洁中文说明本版改了什么。 Do not create or delegate to subagents; perform all reading, editing, testing, and review in this Agent. Do not submit an unchanged worktree, commit, publish, install, change evaluation inputs, or hard-code Case answers; the controller handles version creation, installation, and evaluation."
     }
     if (kind === "decision") {
         return "Compare the baseline and current full-regression evidence using the Playbook decision principles, then call optimization.submit_decision with schemaVersion rolling-skill-optimization-decision/v1, action continue/finish/pause, and a factual rationale. Continue only when evidence supports another generalizable improvement. Never invent missing scores or treat Runtime/service failures as Skill quality failures."

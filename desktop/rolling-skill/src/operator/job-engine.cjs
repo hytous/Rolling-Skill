@@ -1,5 +1,6 @@
 const {operatorMethodBudgetMinimum} = require("../control-plane/policy.cjs")
 const {isAutomaticBudget} = require("./operator-budget.cjs")
+const {approvalHasExpired} = require("./approval-expiry.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const TERMINAL_STEP_STATUSES = new Set(["succeeded", "failed", "cancelled"])
@@ -1219,7 +1220,7 @@ class OperatorJobEngine {
         const expired = []
         for (const job of jobs) {
             const approvals = this.#store.listApprovals(job.id).filter((approval) => (
-                approval.status === "pending" && Date.parse(approval.expiresAt) <= this.#now()
+                approval.status === "pending" && approvalHasExpired(approval, this.#now())
             ))
             for (const approval of approvals) {
                 const result = await this.#enqueue(approval.jobId, () => this.#withJobOperation(

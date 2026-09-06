@@ -4688,6 +4688,7 @@ var require_managed_skill_store = __commonJS({
         const versionState = requiredString(version.state, "Version state", 40);
         if (!VERSION_STATES.has(versionState)) throw new Error("Managed Skill version state is invalid");
         const label = validateNullableText(version.versionLabel, "Version label", 64);
+        validateNullableText(version.title, "Version title", 80);
         if (versionState === "released" && !label) throw new Error("Released version requires a label");
         if (label) {
           const labelKey = `${skillId}\0${label}`;
@@ -5042,6 +5043,7 @@ var require_managed_skill_store = __commonJS({
           contentDigest,
           state,
           versionLabel: null,
+          title: validateNullableText(input.title, "Version title", 80),
           createdBy,
           optimizationRoundId: input.optimizationRoundId ? requiredString(input.optimizationRoundId, "Optimization round", 200) : null,
           optimizationRunId,
@@ -15135,6 +15137,7 @@ var require_managed_skill_manager = __commonJS({
       }
       createCandidate(input = {}) {
         return this.enqueue(async () => {
+          const title = input.title ? requiredText(input.title, "Candidate title", 80) : null;
           const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200));
           const repository = this.store.getRepository(skill.repositoryId);
           if (input.expectedBase !== void 0) {
@@ -15214,6 +15217,7 @@ var require_managed_skill_manager = __commonJS({
                 contentDigest: snapshot.digest,
                 state: "candidate",
                 createdBy: input.createdBy ?? "user",
+                title,
                 optimizationRoundId: input.optimizationRoundId ?? null
               }));
             }
@@ -37518,8 +37522,11 @@ var require_contracts = __commonJS({
       contentDigest: boundedText(200, "Version content digest").optional(),
       state: boundedText(40, "Version state").optional(),
       versionLabel: z.string().max(64).nullable().optional(),
+      title: z.string().max(80).nullable().optional(),
       createdBy: boundedText(40, "Version creator").optional(),
       optimizationRoundId: z.string().max(MAX_IDENTIFIER_LENGTH).nullable().optional(),
+      optimizationRunId: z.string().max(MAX_IDENTIFIER_LENGTH).nullable().optional(),
+      optimizationEpoch: z.number().int().positive().nullable().optional(),
       createdAt: boundedText(100, "Version creation time").optional(),
       releasedAt: z.string().max(100).nullable().optional(),
       deprecatedAt: z.string().max(100).nullable().optional()
@@ -38096,6 +38103,7 @@ var require_contracts = __commonJS({
           repositoryId: id,
           skillId: id,
           message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+          title: boundedText(80, "Concise user-facing version title; briefly describe the changes in the user's language").optional(),
           idempotencyKey: id
         }).strict(),
         output: z.object({ version: managedSkillVersion }).strict()
@@ -38286,6 +38294,7 @@ var require_contracts = __commonJS({
         input: z.object({
           runId: id,
           message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+          title: boundedText(80, "Concise user-facing version title").optional(),
           idempotencyKey: id
         }).strict(),
         output: z.object({ accepted: z.object({ runId: id, kind: z.literal("candidate") }).strict() }).strict()
@@ -43647,13 +43656,15 @@ var require_optimization_agent_context = __commonJS({
           maxEpochs: context.maxEpochs
         })}`,
         "\u8BF7\u5728\u63A7\u5236\u5668\u63D0\u4F9B\u7684\u9694\u79BB\u5DE5\u4F5C\u533A\u5185\u6309\u4E0B\u5217\u51BB\u7ED3\u65B9\u6CD5\u5DE5\u4F5C\u3002\u6BCF\u8F6E\u53EA\u4FEE\u6539\u5F53\u524D Skill\uFF1B\u5019\u9009\u7248\u672C\u521B\u5EFA\u3001\u5B89\u88C5\u3001\u5B8C\u6574\u8BC4\u6D4B\u548C\u6700\u7EC8\u5BA1\u6279\u7531\u63A7\u5236\u5668\u8D1F\u8D23\u3002",
+        "\u4E0D\u8981\u521B\u5EFA\u6216\u59D4\u6D3E\u7ED9\u5B50 Agent\uFF1B\u5B8C\u6574\u9605\u8BFB\u3001\u4FEE\u6539\u3001\u6D4B\u8BD5\u548C\u590D\u6838\u90FD\u7531\u5F53\u524D\u4F18\u5316 Agent \u81EA\u5DF1\u5B8C\u6210\u3002",
+        "\u63D0\u4EA4\u5019\u9009\u65F6\u586B\u5199 title\uFF1A\u7528\u7B80\u6D01\u4E2D\u6587\u6982\u62EC\u672C\u7248\u6539\u8FDB\uFF0C\u4F8B\u5982\u2018\u4FEE\u6B63\u9884\u7B97\u6BD4\u4F8B\u4E0E\u5B9E\u4F8B\u6392\u540D\u2019\uFF0C\u4E0D\u8981\u7528 UUID\u3001\u63D0\u4EA4\u54C8\u5E0C\u6216\u901A\u7528\u7684 Candidate Epoch \u6807\u9898\u3002",
         context.playbook.content,
         "\u7B49\u5F85\u63A7\u5236\u5668\u53D1\u9001\u5F53\u524D Candidate \u6216 Decision \u9636\u6BB5\u7684\u8BC4\u6D4B\u8BC1\u636E\u548C Tool \u8C03\u7528\u8981\u6C42\u3002"
       ].join("\n\n");
     }
     function phaseInstruction(kind) {
       if (kind === "candidate") {
-        return "Read the complete Skill and supplied evidence, make a generalizable improvement in the isolated worktree, self-check it, then call optimization.submit_candidate with a concise factual change summary. Do not submit an unchanged worktree, commit, publish, install, change evaluation inputs, or hard-code Case answers; the controller handles version creation, installation, and evaluation.";
+        return "Read the complete Skill and supplied evidence, make a generalizable improvement in the isolated worktree, self-check it, then call optimization.submit_candidate with a concise factual change summary. \u586B\u5199 title\uFF1A\u7528\u7B80\u6D01\u4E2D\u6587\u8BF4\u660E\u672C\u7248\u6539\u4E86\u4EC0\u4E48\u3002 Do not create or delegate to subagents; perform all reading, editing, testing, and review in this Agent. Do not submit an unchanged worktree, commit, publish, install, change evaluation inputs, or hard-code Case answers; the controller handles version creation, installation, and evaluation.";
       }
       if (kind === "decision") {
         return "Compare the baseline and current full-regression evidence using the Playbook decision principles, then call optimization.submit_decision with schemaVersion rolling-skill-optimization-decision/v1, action continue/finish/pause, and a factual rationale. Continue only when evidence supports another generalizable improvement. Never invent missing scores or treat Runtime/service failures as Skill quality failures.";
@@ -45796,8 +45807,11 @@ var require_domain_services = __commonJS({
         "contentDigest",
         "state",
         "versionLabel",
+        "title",
         "createdBy",
         "optimizationRoundId",
+        "optimizationRunId",
+        "optimizationEpoch",
         "createdAt",
         "releasedAt",
         "deprecatedAt"
@@ -47278,6 +47292,7 @@ var require_domain_services = __commonJS({
           const version = await managedSkillManager.createCandidate({
             skillId: input.skillId,
             message: input.message,
+            ...input.title ? { title: input.title } : {},
             createdBy: "operator",
             ...approvedFacts?.method === "skills.create_candidate" ? {
               expectedBase: {
@@ -48962,11 +48977,23 @@ var require_operator_budget = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/operator/approval-expiry.cjs
+var require_approval_expiry = __commonJS({
+  "../../desktop/rolling-skill/src/operator/approval-expiry.cjs"(exports, module) {
+    function approvalHasExpired(approval, now = Date.now()) {
+      if (approval.action === "optimization.release-install" && approval.proposedMutation?.method === "optimization.approval") return false;
+      return Date.parse(approval.expiresAt) <= now;
+    }
+    module.exports = { approvalHasExpired };
+  }
+});
+
 // ../../desktop/rolling-skill/src/operator/job-engine.cjs
 var require_job_engine = __commonJS({
   "../../desktop/rolling-skill/src/operator/job-engine.cjs"(exports, module) {
     var { operatorMethodBudgetMinimum } = require_policy();
     var { isAutomaticBudget } = require_operator_budget();
+    var { approvalHasExpired } = require_approval_expiry();
     var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
     var TERMINAL_STEP_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
     var RESERVATION_FIELDS = Object.freeze([
@@ -50076,7 +50103,7 @@ var require_job_engine = __commonJS({
         const jobs = jobId === null ? this.#store.listJobs() : [this.#store.getJob(jobId)];
         const expired = [];
         for (const job of jobs) {
-          const approvals = this.#store.listApprovals(job.id).filter((approval) => approval.status === "pending" && Date.parse(approval.expiresAt) <= this.#now());
+          const approvals = this.#store.listApprovals(job.id).filter((approval) => approval.status === "pending" && approvalHasExpired(approval, this.#now()));
           for (const approval of approvals) {
             const result = await this.#enqueue(approval.jobId, () => this.#withJobOperation(
               approval.jobId,
@@ -50688,6 +50715,7 @@ var require_job_store = __commonJS({
     } = __require("node:fs");
     var { basename, dirname: dirname2, isAbsolute, join, resolve: resolve2 } = __require("node:path");
     var { normalizeOperatorBudget } = require_operator_budget();
+    var { approvalHasExpired } = require_approval_expiry();
     var LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1";
     var V2_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2";
     var OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v3";
@@ -52707,7 +52735,7 @@ var require_job_store = __commonJS({
           if (!job || job.status !== "waiting_approval") {
             throw new Error("Operator approval Job status must remain waiting_approval");
           }
-          if (decisionInput.decision === "approve" && Date.parse(approval.expiresAt) <= Date.now()) {
+          if (decisionInput.decision === "approve" && approvalHasExpired(approval)) {
             throw new Error("Operator approval has expired");
           }
           approval.status = decisionInput.decision === "approve" ? "approved" : "rejected";
@@ -56263,6 +56291,7 @@ var require_optimization_control_service = __commonJS({
         const accepted = this.operatorGateway.submitCandidate({
           runId: input.runId,
           message: input.message,
+          ...input.title ? { title: input.title } : {},
           operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300)
         });
         return { accepted };
@@ -56400,7 +56429,8 @@ var require_optimization_operator_gateway = __commonJS({
       }
       submitCandidate(input) {
         const message = requiredText(input?.message, "Optimization Candidate message", 2e3);
-        return this.#submit(input, "candidate", { message });
+        const title = input?.title ? requiredText(input.title, "Candidate title", 80) : null;
+        return this.#submit(input, "candidate", { message, ...title ? { title } : {} });
       }
       submitDecision(input) {
         return this.#submit(input, "decision", {
@@ -57252,7 +57282,8 @@ var require_optimization_runner = __commonJS({
                 const version = await this.workspaceManager.createCandidate({
                   runId: control.runId,
                   epoch: epochNumber,
-                  message: String(submission?.message ?? "")
+                  message: String(submission?.message ?? ""),
+                  ...submission?.title ? { title: submission.title } : {}
                 });
                 const artifact = this.#artifact(
                   jobId,
@@ -59437,7 +59468,7 @@ var require_optimization_workspace = __commonJS({
         return this.enqueue(() => this.#createCandidate(input));
       }
       async #createCandidate(input) {
-        exactKeys2(input, ["runId", "epoch", "message"], "Optimization Candidate input");
+        exactKeys2(input, ["runId", "epoch", "message", ...Object.hasOwn(input, "title") ? ["title"] : []], "Optimization Candidate input");
         const runId = requiredId(input.runId, "Optimization Run");
         const epoch = requiredEpoch(input.epoch);
         const message = requiredText(input.message, "Candidate commit message", 2e3);
@@ -59512,6 +59543,7 @@ Rolling-Skill-Optimization-Epoch: ${epoch}`;
           contentDigest: snapshot.digest,
           state: "candidate",
           createdBy: "optimization",
+          title: input.title ? requiredText(input.title, "Candidate title", 80) : message.split("\n")[0].slice(0, 80),
           optimizationRunId: runId,
           optimizationEpoch: epoch
         });
@@ -60528,6 +60560,32 @@ var require_evaluation_turn_error = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/evaluation-timeout.cjs
+var require_evaluation_timeout = __commonJS({
+  "../../desktop/rolling-skill/src/evaluation-timeout.cjs"(exports, module) {
+    function evaluationTimeoutMs(input = {}) {
+      const timeoutMs = input?.timeoutMs;
+      if (timeoutMs === void 0 || timeoutMs === null) return null;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new TypeError("Evaluation timeout must be a positive finite number");
+      }
+      return timeoutMs;
+    }
+    function startEvaluationTimeout(input, onTimeout) {
+      const timeoutMs = evaluationTimeoutMs(input);
+      return timeoutMs === null ? null : setTimeout(onTimeout, timeoutMs);
+    }
+    function clearEvaluationTimeout(timeout) {
+      if (timeout !== null) clearTimeout(timeout);
+    }
+    module.exports = {
+      clearEvaluationTimeout,
+      evaluationTimeoutMs,
+      startEvaluationTimeout
+    };
+  }
+});
+
 // ../../desktop/rolling-skill/src/trace-recorder.cjs
 var require_trace_recorder = __commonJS({
   "../../desktop/rolling-skill/src/trace-recorder.cjs"(exports, module) {
@@ -61100,6 +61158,10 @@ var require_codex_app_server = __commonJS({
     var { JsonLineDecoder, RpcRequestTracker } = require_json_rpc();
     var { CONTROL_METHODS, publicControlError } = require_contracts();
     var { evaluationTurnError } = require_evaluation_turn_error();
+    var {
+      clearEvaluationTimeout,
+      startEvaluationTimeout
+    } = require_evaluation_timeout();
     var { TraceRecorder } = require_trace_recorder();
     var {
       mergeOperatorChildEnvironment,
@@ -61936,7 +61998,7 @@ var require_codex_app_server = __commonJS({
         let cleanup = () => {
         };
         const completed = new Promise((resolve2, reject) => {
-          const timeout = setTimeout(() => {
+          const timeout = startEvaluationTimeout(input, () => {
             cleanup();
             if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {
             });
@@ -61949,7 +62011,7 @@ var require_codex_app_server = __commonJS({
               startedAt,
               lastActivityAt
             }));
-          }, input.timeoutMs ?? 30 * 60 * 1e3);
+          });
           const onNotification = (message) => {
             const params = message?.params ?? {};
             if (params.threadId !== threadId) return;
@@ -61981,7 +62043,7 @@ var require_codex_app_server = __commonJS({
             reject(new Error("The evaluation runtime stopped before completion"));
           };
           cleanup = () => {
-            clearTimeout(timeout);
+            clearEvaluationTimeout(timeout);
             this.off("notification", onNotification);
             this.off("state", onState);
           };
@@ -62027,12 +62089,12 @@ var require_codex_app_server = __commonJS({
         let cleanup = () => {
         };
         const completed = new Promise((resolve2, reject) => {
-          const timeout = setTimeout(() => {
+          const timeout = startEvaluationTimeout(input, () => {
             cleanup();
             if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {
             });
             reject(new Error("The evaluation Judge turn timed out"));
-          }, input.timeoutMs ?? 30 * 60 * 1e3);
+          });
           const onNotification = (message) => {
             const params = message?.params ?? {};
             if (params.threadId !== threadId) return;
@@ -62063,7 +62125,7 @@ var require_codex_app_server = __commonJS({
             reject(new Error("The evaluation Judge runtime stopped before completion"));
           };
           cleanup = () => {
-            clearTimeout(timeout);
+            clearEvaluationTimeout(timeout);
             this.off("notification", onNotification);
             this.off("state", onState);
           };
@@ -62299,6 +62361,10 @@ var require_codebuddy_acp_client = __commonJS({
     var { version: clientVersion } = require_package();
     var { JsonLineDecoder, RpcRequestTracker } = require_json_rpc();
     var { evaluationTurnError } = require_evaluation_turn_error();
+    var {
+      clearEvaluationTimeout,
+      startEvaluationTimeout
+    } = require_evaluation_timeout();
     var { TraceRecorder } = require_trace_recorder();
     var {
       mergeOperatorChildEnvironment,
@@ -62861,7 +62927,7 @@ ${input.question}` : input.question;
         let cleanup = () => {
         };
         const completed = new Promise((resolve2, reject) => {
-          const timeout = setTimeout(() => {
+          const timeout = startEvaluationTimeout(input, () => {
             cleanup();
             try {
               void Promise.resolve(this.interruptTurn(threadId)).catch(() => {
@@ -62877,7 +62943,7 @@ ${input.question}` : input.question;
               startedAt,
               lastActivityAt
             }));
-          }, input.timeoutMs ?? 30 * 60 * 1e3);
+          });
           const onNotification = (message) => {
             const params = message?.params ?? {};
             if (params.threadId !== threadId) return;
@@ -62897,7 +62963,7 @@ ${input.question}` : input.question;
             reject(new Error("The evaluation runtime stopped before completion"));
           };
           cleanup = () => {
-            clearTimeout(timeout);
+            clearEvaluationTimeout(timeout);
             this.off("notification", onNotification);
             this.off("state", onState);
           };
@@ -62944,7 +63010,7 @@ ${input.question}` : input.question;
         let cleanup = () => {
         };
         const completed = new Promise((resolve2, reject) => {
-          const timeout = setTimeout(() => {
+          const timeout = startEvaluationTimeout(input, () => {
             cleanup();
             try {
               void Promise.resolve(this.interruptTurn(threadId)).catch(() => {
@@ -62952,7 +63018,7 @@ ${input.question}` : input.question;
             } catch {
             }
             reject(new Error("The evaluation Judge turn timed out"));
-          }, input.timeoutMs ?? 30 * 60 * 1e3);
+          });
           const onNotification = (message) => {
             const params = message?.params ?? {};
             if (params.threadId !== threadId) return;
@@ -62975,7 +63041,7 @@ ${input.question}` : input.question;
             reject(new Error("The evaluation Judge runtime stopped before completion"));
           };
           cleanup = () => {
-            clearTimeout(timeout);
+            clearEvaluationTimeout(timeout);
             this.off("notification", onNotification);
             this.off("state", onState);
           };
@@ -63220,6 +63286,10 @@ var require_deepseek_harness_client = __commonJS({
     var { tmpdir } = __require("node:os");
     var { dirname: dirname2, isAbsolute, join } = __require("node:path");
     var { evaluationTurnError } = require_evaluation_turn_error();
+    var {
+      clearEvaluationTimeout,
+      evaluationTimeoutMs
+    } = require_evaluation_timeout();
     var { TraceRecorder } = require_trace_recorder();
     var {
       mergeOperatorChildEnvironment,
@@ -64651,7 +64721,7 @@ ${servers.map((server, index) => [
         let cleanup = () => {
         };
         const promise = new Promise((resolve2, reject) => {
-          const timeout = setTimeout(() => {
+          const timeout = timeoutMs === null ? null : setTimeout(() => {
             cleanup();
             onTimeout();
             reject(new Error("The DeepSeek Harness turn timed out"));
@@ -64675,7 +64745,7 @@ ${servers.map((server, index) => [
             reject(new Error("The DeepSeek Harness runtime stopped before completion"));
           };
           cleanup = () => {
-            clearTimeout(timeout);
+            clearEvaluationTimeout(timeout);
             this.off("notification", onNotification);
             this.off("state", onState);
           };
@@ -64698,7 +64768,7 @@ ${servers.map((server, index) => [
         this.on("notification", activityListener);
         const completion = this.waitForCompletedTurn(
           threadId,
-          input.timeoutMs ?? 30 * 60 * 1e3,
+          evaluationTimeoutMs(input),
           () => void this.interruptTurn(threadId).catch(() => {
           })
         );

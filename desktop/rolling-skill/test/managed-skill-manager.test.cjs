@@ -213,6 +213,7 @@ describe("managed Skill repository manager", () => {
         const candidate = await manager.createCandidate({
             skillId: skill.id,
             message: "Clarify billing workflow",
+            title: "明确账单查询流程",
             expectedBase: {
                 commit: base.commit,
                 contentDigest: base.contentDigest,
@@ -222,6 +223,7 @@ describe("managed Skill repository manager", () => {
 
         assert.notEqual(candidate.commit, imported.versions[0].commit)
         assert.equal(candidate.createdBy, "user")
+        assert.equal(candidate.title, "明确账单查询流程")
         assert.equal(store.listVersions(skill.id).length, 2)
         await assert.rejects(
             () => manager.createCandidate({skillId: skill.id, message: "No changes"}),

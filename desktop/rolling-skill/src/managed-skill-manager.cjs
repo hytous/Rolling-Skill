@@ -442,6 +442,7 @@ class ManagedSkillManager {
 
     createCandidate(input = {}) {
         return this.enqueue(async () => {
+            const title = input.title ? requiredText(input.title, "Candidate title", 80) : null
             const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200))
             const repository = this.store.getRepository(skill.repositoryId)
             if (input.expectedBase !== undefined) {
@@ -529,6 +530,7 @@ class ManagedSkillManager {
                         contentDigest: snapshot.digest,
                         state: "candidate",
                         createdBy: input.createdBy ?? "user",
+                        title,
                         optimizationRoundId: input.optimizationRoundId ?? null,
                     }))
                 }

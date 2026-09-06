@@ -17824,8 +17824,11 @@ var require_contracts = __commonJS({
       contentDigest: boundedText(200, "Version content digest").optional(),
       state: boundedText(40, "Version state").optional(),
       versionLabel: z2.string().max(64).nullable().optional(),
+      title: z2.string().max(80).nullable().optional(),
       createdBy: boundedText(40, "Version creator").optional(),
       optimizationRoundId: z2.string().max(MAX_IDENTIFIER_LENGTH).nullable().optional(),
+      optimizationRunId: z2.string().max(MAX_IDENTIFIER_LENGTH).nullable().optional(),
+      optimizationEpoch: z2.number().int().positive().nullable().optional(),
       createdAt: boundedText(100, "Version creation time").optional(),
       releasedAt: z2.string().max(100).nullable().optional(),
       deprecatedAt: z2.string().max(100).nullable().optional()
@@ -18402,6 +18405,7 @@ var require_contracts = __commonJS({
           repositoryId: id,
           skillId: id,
           message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+          title: boundedText(80, "Concise user-facing version title; briefly describe the changes in the user's language").optional(),
           idempotencyKey: id
         }).strict(),
         output: z2.object({ version: managedSkillVersion }).strict()
@@ -18592,6 +18596,7 @@ var require_contracts = __commonJS({
         input: z2.object({
           runId: id,
           message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+          title: boundedText(80, "Concise user-facing version title").optional(),
           idempotencyKey: id
         }).strict(),
         output: z2.object({ accepted: z2.object({ runId: id, kind: z2.literal("candidate") }).strict() }).strict()

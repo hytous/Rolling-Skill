@@ -1585,6 +1585,22 @@ describe("Operator Job store", () => {
         assert.ok(closed.resolvedAt)
     })
 
+    it("keeps an overnight final optimization approval actionable", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            action: "optimization.release-install", scope: {versionId: "frozen-version"},
+            proposedMutation: {method: "optimization.approval"},
+            risk: "final review", expiresAt: "2000-01-01T00:00:00.000Z",
+        })
+        assert.equal(store.resolveApproval(approval.id, {
+            decision: "approve", scope: "single_action",
+        }).status, "approved")
+    })
+
     it("allows rejecting an expired approval but never approving it", () => {
         const expiredFixture = fixture()
         const expiredSession = createSession(expiredFixture.store)

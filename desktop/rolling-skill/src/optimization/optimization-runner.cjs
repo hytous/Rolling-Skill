@@ -652,6 +652,7 @@ class OptimizationRunner {
                             runId: control.runId,
                             epoch: epochNumber,
                             message: String(submission?.message ?? ""),
+                            ...(submission?.title ? {title: submission.title} : {}),
                         })
                         const artifact = this.#artifact(
                             jobId,

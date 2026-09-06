@@ -186,6 +186,7 @@ function validateState(state) {
         const versionState = requiredString(version.state, "Version state", 40)
         if (!VERSION_STATES.has(versionState)) throw new Error("Managed Skill version state is invalid")
         const label = validateNullableText(version.versionLabel, "Version label", 64)
+        validateNullableText(version.title, "Version title", 80)
         if (versionState === "released" && !label) throw new Error("Released version requires a label")
         if (label) {
             const labelKey = `${skillId}\0${label}`
@@ -579,6 +580,7 @@ class ManagedSkillStore {
             contentDigest,
             state,
             versionLabel: null,
+            title: validateNullableText(input.title, "Version title", 80),
             createdBy,
             optimizationRoundId: input.optimizationRoundId
                 ? requiredString(input.optimizationRoundId, "Optimization round", 200)

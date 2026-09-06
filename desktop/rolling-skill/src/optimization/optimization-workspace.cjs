@@ -261,7 +261,7 @@ class OptimizationWorkspaceManager {
     }
 
     async #createCandidate(input) {
-        exactKeys(input, ["runId", "epoch", "message"], "Optimization Candidate input")
+        exactKeys(input, ["runId", "epoch", "message", ...(Object.hasOwn(input, "title") ? ["title"] : [])], "Optimization Candidate input")
         const runId = requiredId(input.runId, "Optimization Run")
         const epoch = requiredEpoch(input.epoch)
         const message = requiredText(input.message, "Candidate commit message", 2_000)
@@ -344,6 +344,7 @@ class OptimizationWorkspaceManager {
             contentDigest: snapshot.digest,
             state: "candidate",
             createdBy: "optimization",
+            title: input.title ? requiredText(input.title, "Candidate title", 80) : message.split("\n")[0].slice(0, 80),
             optimizationRunId: runId,
             optimizationEpoch: epoch,
         })

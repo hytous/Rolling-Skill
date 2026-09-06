@@ -126,8 +126,11 @@ describe("OptimizationWorkspaceManager", () => {
             runId: run.id,
             epoch: 101,
             message: "Improve billing workflow",
+            title: "修正预算比例与实例排名",
         })
 
+        assert.equal(candidate.title, "修正预算比例与实例排名")
+        assert.equal(store.getVersion(candidate.id).title, candidate.title)
         assert.equal(candidate.repositoryId, run.snapshot.baseline.repositoryId)
         assert.equal(candidate.skillId, run.snapshot.baseline.skillId)
         assert.equal(candidate.createdBy, "optimization")
