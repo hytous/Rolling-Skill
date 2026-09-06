@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict")
 const {EventEmitter} = require("node:events")
-const {mkdtempSync, rmSync} = require("node:fs")
+const {mkdtempSync, rmSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
@@ -284,6 +284,22 @@ describe("Optimization Candidate experiment installation", () => {
         assert.equal(recovered.trusted, false)
     })
 
+    it("accepts a bounded default error when a non-success registration omits details", () => {
+        const request = experimentRequest({operation: "experiment_inspect"})
+        const recovered = validateSkillInstallationRegistration({
+            ...successEvidence(request),
+            status: "needs_recovery",
+            classificationBefore: "managed-drifted",
+            mutationPerformed: false,
+            error: null,
+        }, request)
+
+        assert.equal(recovered.status, "needs_recovery")
+        assert.equal(recovered.trusted, false)
+        assert.equal(recovered.error.code, "INSTALLATION_NEEDS_RECOVERY")
+        assert.match(recovered.error.message, /needs recovery/iu)
+    })
+
     it("builds operation-specific marker-free prompts", () => {
         const install = buildSkillInstallationPrompt(experimentRequest(), {
             requestedPermission: "workspace-write",
@@ -324,7 +340,7 @@ describe("Optimization Candidate experiment installation", () => {
         assert.match(registrationExample(inspect).beforeDigest, /null when absent/u)
     })
 
-    it("keeps successful experiment Jobs out of the formal installation matrix", () => {
+    it("keeps successful Candidate experiment installs out of the formal installation matrix", () => {
         const root = mkdtempSync(join(tmpdir(), "rolling-skill-experiment-store-"))
         temporaryDirectories.push(root)
         const store = new SkillInstallationStore(join(root, "installations.json"))
@@ -345,6 +361,42 @@ describe("Optimization Candidate experiment installation", () => {
         assert.equal(store.getJob(job.id).operation, "experiment_install")
         assert.deepEqual(store.read().installations, [])
         assert.deepEqual(store.installationMatrix("skill-1"), [])
+    })
+
+    it("records and recovers a successful experiment restore as the current Released baseline", () => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-experiment-restore-store-"))
+        temporaryDirectories.push(root)
+        const path = join(root, "installations.json")
+        const store = new SkillInstallationStore(path)
+        const request = experimentRequest({
+            operation: "experiment_restore",
+            initial: initialManaged(),
+        })
+        const parsed = validateSkillInstallationRegistration(successEvidence(request), request)
+        const job = store.createJob({
+            operation: request.operation,
+            runtime: {runtimeId: "codex:one", providerId: "codex", displayName: "Codex"},
+            request,
+        })
+        store.updateJob(job.id, {status: "running"})
+        store.acceptRegistration(job.id, {
+            invocationFingerprint: `sha256:${"2".repeat(64)}`,
+            parsedResult: parsed,
+        })
+        store.completeJob(job.id, {status: "succeeded", parsedResult: parsed})
+
+        let matrix = store.installationMatrix("skill-1")
+        assert.equal(matrix[0].versionId, "release-1")
+        assert.equal(matrix[0].contentDigest, digest("b"))
+        assert.equal(matrix[0].trustedJobId, job.id)
+
+        const historical = store.read()
+        historical.installations = []
+        writeFileSync(path, `${JSON.stringify(historical, null, 2)}\n`, "utf8")
+        const restarted = new SkillInstallationStore(path)
+        matrix = restarted.installationMatrix("skill-1")
+        assert.equal(matrix[0].versionId, "release-1")
+        assert.equal(matrix[0].trustedJobId, job.id)
     })
 
     it("starts experiment Jobs with the scoped registration tool", async () => {

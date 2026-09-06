@@ -275,6 +275,48 @@ function frozen(value) {
     return Object.freeze(copy(value))
 }
 
+function installedSourceForJob(job = {}) {
+    if (
+        job.request?.purpose === "managed-installation" &&
+        new Set(["install", "inspect"]).has(job.operation)
+    ) return job.request.source ?? null
+    if (
+        job.request?.purpose === "optimization-experiment" &&
+        job.operation === "experiment_restore"
+    ) return job.request.experiment?.baseline ?? null
+    return null
+}
+
+function trustedInstallationRecord(job, id = randomUUID()) {
+    const source = installedSourceForJob(job)
+    const result = job.parsedResult
+    if (
+        !source ||
+        job.status !== "succeeded" ||
+        job.registration?.state !== "accepted" ||
+        result?.trusted !== true ||
+        !normalizedSkillRoot(result.destination) ||
+        !result.verification ||
+        result.verification === "none" ||
+        result.result?.actualDigest !== source.expectedDigest ||
+        !job.completedAt
+    ) return null
+    return {
+        id,
+        jobId: job.id,
+        runtimeId: job.runtime.runtimeId,
+        providerId: job.runtime.providerId,
+        skillId: source.skillId,
+        repositoryId: source.repositoryId,
+        versionId: source.versionId,
+        commit: source.commit,
+        contentDigest: source.expectedDigest,
+        destination: result.destination,
+        verification: result.verification,
+        installedAt: job.completedAt,
+    }
+}
+
 class SkillInstallationStore {
     constructor(path) {
         this.path = resolve(requiredText(path, "Skill installation store path"))
@@ -319,6 +361,16 @@ class SkillInstallationStore {
                     ))
                     migrated = true
                 }
+            }
+            parsed.installations ??= []
+            const recordedJobIds = new Set(parsed.installations.map((entry) => entry.jobId))
+            for (const job of parsed.jobs ?? []) {
+                if (recordedJobIds.has(job.id)) continue
+                const installation = trustedInstallationRecord(job)
+                if (!installation || job.operation !== "experiment_restore") continue
+                parsed.installations.push(installation)
+                recordedJobIds.add(job.id)
+                migrated = true
             }
             this.state = validateState(parsed)
             if (migrated) this.persist()
@@ -411,6 +463,7 @@ class SkillInstallationStore {
         const records = []
         for (const installation of this.state.installations) {
             const job = this.state.jobs.find((entry) => entry.id === installation.jobId)
+            const installedSource = installedSourceForJob(job)
             const jobIndex = this.state.jobs.findIndex((entry) => entry.id === installation.jobId)
             const invalidatedByAbsentInspection = jobIndex >= 0 && this.state.jobs
                 .slice(jobIndex + 1)
@@ -427,10 +480,9 @@ class SkillInstallationStore {
                 ))
             if (
                 !job ||
+                !installedSource ||
                 invalidatedByAbsentInspection ||
                 job.status !== "succeeded" ||
-                job.request.purpose !== "managed-installation" ||
-                !new Set(["install", "inspect"]).has(job.operation) ||
                 job.registration?.state !== "accepted" ||
                 job.parsedResult?.trusted !== true ||
                 !installation.repositoryId ||
@@ -444,11 +496,11 @@ class SkillInstallationStore {
                 !installation.installedAt ||
                 !installation.verification ||
                 installation.verification === "none" ||
-                job.request.source.repositoryId !== installation.repositoryId ||
-                job.request.source.skillId !== installation.skillId ||
-                job.request.source.versionId !== installation.versionId ||
-                job.request.source.commit !== installation.commit ||
-                job.request.source.expectedDigest !== installation.contentDigest ||
+                installedSource.repositoryId !== installation.repositoryId ||
+                installedSource.skillId !== installation.skillId ||
+                installedSource.versionId !== installation.versionId ||
+                installedSource.commit !== installation.commit ||
+                installedSource.expectedDigest !== installation.contentDigest ||
                 job.runtime.runtimeId !== installation.runtimeId ||
                 job.runtime.providerId !== installation.providerId ||
                 job.parsedResult.destination !== installation.destination ||
@@ -717,27 +769,8 @@ class SkillInstallationStore {
             stored.error = normalizeError(input.error ?? input.parsedResult?.error)
             stored.updatedAt = new Date().toISOString()
             stored.completedAt = stored.updatedAt
-            if (
-                status === "succeeded" &&
-                stored.request.purpose !== "optimization-experiment" &&
-                stored.parsedResult.destination
-            ) {
-                const result = stored.parsedResult
-                this.state.installations.push({
-                    id: randomUUID(),
-                    jobId: stored.id,
-                    runtimeId: stored.runtime.runtimeId,
-                    providerId: stored.runtime.providerId,
-                    skillId: stored.request.source.skillId,
-                    repositoryId: stored.request.source.repositoryId,
-                    versionId: stored.request.source.versionId,
-                    commit: stored.request.source.commit,
-                    contentDigest: stored.request.source.expectedDigest,
-                    destination: result.destination,
-                    verification: result.verification,
-                    installedAt: stored.completedAt,
-                })
-            }
+            const installation = trustedInstallationRecord(stored)
+            if (installation) this.state.installations.push(installation)
             return stored
         })
     }

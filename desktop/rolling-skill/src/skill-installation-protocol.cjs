@@ -437,7 +437,11 @@ function validateSkillInstallationRegistration(value, request, options = {}) {
           ? false
           : null
     const warnings = registrationWarnings(value.warnings)
-    const error = normalizeError(value.error, status !== "succeeded")
+    const defaultError = status === "succeeded" ? null : {
+        code: `INSTALLATION_${status.toUpperCase()}`,
+        message: `Installation Agent reported ${status.replaceAll("_", " ")}.`,
+    }
+    const error = normalizeError(value.error ?? defaultError, false)
     let verification = "none"
     if (status === "succeeded") {
         if (experiment) {
