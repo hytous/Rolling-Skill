@@ -129,7 +129,7 @@ describe("deterministic Optimization analysis", () => {
         assert.equal(analysis.missingScoreCount, 2)
     })
 
-    it("detects new critical failures and broad regression thresholds", () => {
+    it("keeps regression evidence diagnostic while the Epoch loop decides when to stop", () => {
         const previous = evaluation("previous", [result("case-1", "runtime-a", 90)])
         const critical = comparison({
             baseline: previous,
@@ -139,7 +139,7 @@ describe("deterministic Optimization analysis", () => {
             })]),
         })
         assert.deepEqual(critical.newCriticalFailures[0].criticalFailures, ["must-use-skill"])
-        assert.equal(evaluateStopRules(critical).reason, "critical_regression")
+        assert.equal(evaluateStopRules(critical).reason, "continue")
 
         const broadPrevious = evaluation("previous", [result("case-1", "runtime-a", 90)])
         const broad = comparison({
@@ -148,7 +148,9 @@ describe("deterministic Optimization analysis", () => {
             current: evaluation("current", [result("case-1", "runtime-a", 85)]),
             regressionThresholds: {maximumScoreDrop: 4, maximumRegressedResults: 10},
         })
-        assert.equal(evaluateStopRules(broad).reason, "broad_regression")
+        assert.equal(broad.broadRegression, true)
+        assert.equal(evaluateStopRules(broad).reason, "continue")
+        assert.equal(evaluateStopRules({...critical, epoch: 5}).reason, "max_epochs_reached")
     })
 
     it("applies cancellation and recovery precedence", () => {

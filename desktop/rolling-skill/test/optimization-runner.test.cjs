@@ -850,6 +850,38 @@ describe("multi-Epoch OptimizationRunner", () => {
         )
     })
 
+    it("keeps iterating after a regressed Candidate instead of restoring and failing the Run", async () => {
+        const evaluationCalls = []
+        const customEvaluationManager = {
+            async run(input) {
+                evaluationCalls.push(input.kind)
+                const sequence = evaluationCalls.length
+                const run = evaluation(`evaluation-${sequence}`, sequence === 1 ? 70 : sequence === 2 ? 60 : 90)
+                if (sequence === 2) {
+                    run.results[0].computedScore.criticalFailures = ["R5"]
+                }
+                return run
+            },
+        }
+        const fixture = runnerFixture({evaluationManager: customEvaluationManager})
+
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.equal(outcome.status, "succeeded")
+        assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 2)
+        assert.deepEqual(evaluationCalls, ["baseline", "candidate", "candidate"])
+        assert.equal(
+            fixture.installationCalls.some((entry) => entry.operation === "experiment_restore"),
+            false,
+        )
+        const firstAnalysis = JSON.parse(fixture.artifacts.find((artifact) =>
+            artifact.name === "analysis-1.json").body)
+        assert.deepEqual(firstAnalysis.newCriticalFailures[0].criticalFailures, ["R5"])
+    })
+
     it("checkpoints the final approval id while the user decision is still pending", async () => {
         const fixture = runnerFixture()
         let settleApproval

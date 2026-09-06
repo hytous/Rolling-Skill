@@ -278,8 +278,6 @@ function evaluateStopRules(analysis) {
     const limits = requireObject(analysis.limits, "Optimization limits")
     if (analysis.cancelRequested) return stop("restore", "cancel_requested", true)
     if (analysis.recoveryFailed) return stop("recover", "recovery_failed", true)
-    if (analysis.newCriticalFailures?.length) return stop("restore", "critical_regression", true)
-    if (analysis.broadRegression) return stop("restore", "broad_regression", true)
     if (analysis.epoch >= limits.maxEpochs) return stop("finish", "max_epochs_reached", true)
     const action = analysis.agentDecision?.action ?? "continue"
     if (action === "finish") return stop("finish", "agent_finish", false)
