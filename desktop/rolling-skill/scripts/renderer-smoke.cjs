@@ -1157,6 +1157,11 @@ async function run() {
     }
     if (
         !initialEvaluationRuntime.codexText.includes("84/100") ||
+        !initialEvaluationRuntime.codexText.includes("Judge 与评分明细") ||
+        !initialEvaluationRuntime.codexText.includes("工作流和结论均有证据，存在少量说明缺口。") ||
+        !initialEvaluationRuntime.codexText.includes("Codex Judge · gpt-5.6-sol · high") ||
+        initialEvaluationRuntime.codexText.includes("仅诊断") ||
+        initialEvaluationRuntime.codexText.includes("旧版评分记录") ||
         initialEvaluationRuntime.codexText.includes("Smoke evaluation answer") ||
         initialEvaluationRuntime.codexText.includes("trace:L1") ||
         initialEvaluationRuntime.codexText.includes("A · 通用") ||

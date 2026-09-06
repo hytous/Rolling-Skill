@@ -465,6 +465,143 @@ function publicEvaluationScore(score) {
         const value = identifier(score[key])
         if (value !== null) result[key] = value
     }
+    for (const key of ["schemaVersion", "calculatorVersion", "contractDigest"]) {
+        const value = identifier(score[key])
+        if (value !== null) result[key] = value
+    }
+    if (["automatic", "explicit"].includes(score.activationMode)) {
+        result.activationMode = score.activationMode
+    }
+    if (typeof score.scoreCapApplied === "boolean") result.scoreCapApplied = score.scoreCapApplied
+    if (Array.isArray(score.criticalFailures)) {
+        result.criticalFailures = score.criticalFailures
+            .map(identifier)
+            .filter((value) => value !== null)
+            .slice(0, 100)
+    }
+    if (Array.isArray(score.diagnosticReasons)) {
+        result.diagnosticReasons = publicStringList(score.diagnosticReasons, 100, 500)
+    }
+    if (Array.isArray(score.criterionScores)) {
+        result.criterionScores = score.criterionScores
+            .map(publicEvaluationCriterionScore)
+            .filter(Boolean)
+            .slice(0, 100)
+    }
+    return Object.keys(result).length === 0 ? null : result
+}
+
+function publicStringList(value, maximumItems = 100, maximumLength = 4_096) {
+    if (!Array.isArray(value)) return []
+    return value
+        .map((entry) => publicSummaryText(entry, maximumLength))
+        .filter((entry) => entry !== null)
+        .slice(0, maximumItems)
+}
+
+function publicEvaluationCriterionScore(score) {
+    const criterionId = identifier(score?.id)
+    if (criterionId === null) return null
+    const result = {id: criterionId}
+    for (const key of ["status", "verificationStatus"]) {
+        const value = identifier(score[key])
+        if (value !== null) result[key] = value
+    }
+    for (const key of ["rating", "confidence", "points", "deduction", "maxPoints"]) {
+        if (score[key] === null && key === "points") result.points = null
+        else if (Number.isFinite(score[key])) result[key] = score[key]
+    }
+    for (const key of ["verifiableFields", "crossChecks"]) {
+        if (Array.isArray(score[key])) result[key] = publicStringList(score[key])
+    }
+    if (typeof score.criticalFailureTriggered === "boolean") {
+        result.criticalFailureTriggered = score.criticalFailureTriggered
+    }
+    return result
+}
+
+function publicEvaluationAssessment(assessment) {
+    const criterionId = identifier(assessment?.criterionId)
+    if (criterionId === null) return null
+    const result = {criterionId}
+    for (const key of ["status", "verificationStatus"]) {
+        const value = identifier(assessment[key])
+        if (value !== null) result[key] = value
+    }
+    for (const key of ["rating", "confidence"]) {
+        if (Number.isFinite(assessment[key])) result[key] = assessment[key]
+    }
+    for (const key of ["verifiableFields", "crossChecks"]) {
+        if (Array.isArray(assessment[key])) result[key] = publicStringList(assessment[key])
+    }
+    if (Array.isArray(assessment.evidenceRefs)) {
+        result.evidenceRefs = publicStringList(assessment.evidenceRefs, 100, 1_000)
+    }
+    const rationale = publicSummaryText(assessment.rationale, 10_000)
+    if (rationale !== null) result.rationale = rationale
+    return result
+}
+
+function publicEvaluationJudgment(judgment) {
+    if (!judgment || typeof judgment !== "object" || Array.isArray(judgment)) return null
+    const result = {}
+    for (const key of ["schemaVersion", "contractDigest"]) {
+        const value = identifier(judgment[key])
+        if (value !== null) result[key] = value
+    }
+    if (Array.isArray(judgment.assessments)) {
+        result.assessments = judgment.assessments
+            .map(publicEvaluationAssessment)
+            .filter(Boolean)
+            .slice(0, 100)
+    }
+    return Object.keys(result).length === 0 ? null : result
+}
+
+function publicEvaluationCriterion(criterion) {
+    const criterionId = identifier(criterion?.id)
+    if (criterionId === null) return null
+    const result = {id: criterionId}
+    for (const [key, limit] of [["title", 1_000], ["criterion", 20_000]]) {
+        const value = publicSummaryText(criterion[key], limit)
+        if (value !== null) result[key] = value
+    }
+    if (Number.isFinite(criterion.weight) && criterion.weight >= 0) result.weight = criterion.weight
+    if (Number.isFinite(criterion.maximumDeduction) && criterion.maximumDeduction >= 0) {
+        result.maximumDeduction = criterion.maximumDeduction
+    }
+    const source = identifier(criterion.source)
+    if (source !== null) result.source = source
+    if (["penalty", "automatic_failure"].includes(criterion.mode)) result.mode = criterion.mode
+    if (typeof criterion.criticalFailure === "boolean") {
+        result.criticalFailure = criterion.criticalFailure
+    }
+    return result
+}
+
+function publicEvaluationScoreContract(contract) {
+    if (!contract || typeof contract !== "object" || Array.isArray(contract)) return null
+    const result = {}
+    for (const key of ["schemaVersion", "digest"]) {
+        const value = identifier(contract[key])
+        if (value !== null) result[key] = value
+    }
+    if (Array.isArray(contract.criteria)) {
+        result.criteria = contract.criteria
+            .map(publicEvaluationCriterion)
+            .filter(Boolean)
+            .slice(0, 100)
+    }
+    return Object.keys(result).length === 0 ? null : result
+}
+
+function publicSkillExecutionBinding(binding) {
+    if (!binding || typeof binding !== "object" || Array.isArray(binding)) return null
+    const result = {}
+    for (const key of ["declaredBinding", "observedBinding", "effectiveBinding"]) {
+        const value = identifier(binding[key])
+        if (value !== null) result[key] = value
+    }
     return Object.keys(result).length === 0 ? null : result
 }
 
@@ -487,8 +624,29 @@ function publicEvaluationRuntime(configuration) {
     return result
 }
 
+function publicEvaluationJudge(judge) {
+    const runtime = publicEvaluationRuntime(judge)
+    if (runtime === null) return null
+    const result = {...runtime}
+    const status = identifier(judge?.status)
+    if (status !== null) result.status = status
+    if (Number.isSafeInteger(judge?.attempts) && judge.attempts >= 0) result.attempts = judge.attempts
+    if (judge?.durationMs === null || (Number.isSafeInteger(judge?.durationMs) && judge.durationMs >= 0)) {
+        result.durationMs = judge.durationMs
+    }
+    if (Object.hasOwn(judge ?? {}, "error")) {
+        result.error = judge.error === null ? null : publicSummaryText(judge.error)
+    }
+    return result
+}
+
 function publicEvaluationResult(result) {
     const score = publicEvaluationScore(result?.computedScore)
+    const runtimeConfiguration = publicEvaluationRuntime(result?.runtimeConfiguration)
+    const skillExecutionBinding = publicSkillExecutionBinding(result?.skillExecutionBinding)
+    const judge = publicEvaluationJudge(result?.judge)
+    const scoreContract = publicEvaluationScoreContract(result?.scoreContract)
+    const judgment = publicEvaluationJudgment(result?.judgment)
     const title = publicSummaryText(result?.title ?? result?.caseSnapshot?.question, 500)
     const reasonSummary = publicSummaryText(
         result?.reasonSummary ?? result?.judgment?.summary ?? result?.judgment?.reason ??
@@ -514,6 +672,11 @@ function publicEvaluationResult(result) {
                 (Number.isSafeInteger(result.durationMs) && result.durationMs >= 0))
             ? {durationMs: result.durationMs}
             : {}),
+        ...(runtimeConfiguration === null ? {} : {runtimeConfiguration}),
+        ...(skillExecutionBinding === null ? {} : {skillExecutionBinding}),
+        ...(judge === null ? {} : {judge}),
+        ...(scoreContract === null ? {} : {scoreContract}),
+        ...(judgment === null ? {} : {judgment}),
         ...(score === null ? {} : {computedScore: score}),
         ...(reasonSummary === null ? {} : {reasonSummary}),
         ...(artifactRefs.length === 0 ? {} : {artifactRefs}),
@@ -543,6 +706,7 @@ function publicEvaluationRun(run, {includeResults = false} = {}) {
     const skillReference = run?.skillReference && typeof run.skillReference === "object"
         ? publicSkillReference(run.skillReference)
         : null
+    const judgeConfiguration = publicEvaluationRuntime(run?.judgeConfiguration)
     const artifactRefs = publicArtifactReferences(run)
     const error = Object.hasOwn(run ?? {}, "error")
         ? run.error === null
@@ -568,6 +732,7 @@ function publicEvaluationRun(run, {includeResults = false} = {}) {
         resultCount: results.length,
         progress: {total: results.length, ...counts},
         ...(runtimeConfigurations.length === 0 ? {} : {runtimeConfigurations}),
+        ...(judgeConfiguration === null ? {} : {judgeConfiguration}),
         ...(publicResults === null ? {} : {
             results: publicResults,
             resultsTruncated: publicResults.length < results.length,

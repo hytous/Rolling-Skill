@@ -37,6 +37,7 @@ function createFixture({
     startEvaluation = null,
     trustedHuman = false,
     updateIfCurrent = null,
+    evaluationRun = null,
 } = {}) {
     const skills = [
         {id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "billing"},
@@ -64,7 +65,11 @@ function createFixture({
         getDataset: mock.fn(() => ({id: "dataset-1", name: "Billing"})),
         listCases: mock.fn(() => [{id: "case-1", datasetId: "dataset-1", question: "case"}]),
         listEvaluationRunSummaries: mock.fn(() => [{id: "run-1", datasetId: "dataset-1", status: "running"}]),
-        getEvaluationRun: mock.fn(() => ({id: "run-1", datasetId: "dataset-1", status: "running"})),
+        getEvaluationRun: mock.fn(() => structuredClone(evaluationRun ?? {
+            id: "run-1",
+            datasetId: "dataset-1",
+            status: "running",
+        })),
     }
     const dispatchRawCase = mock.fn(() => ({threadId: "thread-1", turnId: "turn-1"}))
     const listRuntimesMock = mock.fn(listRuntimes ?? (() => [
@@ -999,6 +1004,135 @@ describe("ControlPlane", () => {
         assert.equal(cancelledResult.run.status, "cancelled")
         assert.equal(cancellable.evaluationStore.getEvaluationRun.mock.callCount(), 1)
         assert.equal(cancellable.evaluationRunner.cancel.mock.callCount(), 1)
+    })
+
+    it("returns sanitized criterion-level Judge comments in evaluation details", async () => {
+        const evaluationRun = {
+            id: "run-1",
+            datasetId: "dataset-1",
+            status: "completed",
+            judgeConfiguration: {
+                runtimeId: "judge-1",
+                displayName: "Codex Judge",
+                modelId: "gpt-5.6-sol",
+                effort: "high",
+                executablePath: "/private/codex",
+            },
+            runtimeConfigurations: [{
+                runtimeId: "runtime-1",
+                displayName: "Codex Target",
+                modelId: "gpt-5.6-terra",
+                effort: "medium",
+                executablePath: "/private/codex",
+            }],
+            results: [{
+                id: "result-1",
+                caseId: "case-1",
+                runtimeId: "runtime-1",
+                status: "completed",
+                gradingStatus: "completed",
+                response: "private target answer",
+                traceReference: "/private/trace.jsonl",
+                runtimeConfiguration: {
+                    runtimeId: "runtime-1",
+                    displayName: "Codex Target",
+                    modelId: "gpt-5.6-terra",
+                    effort: "medium",
+                    executablePath: "/private/codex",
+                },
+                skillExecutionBinding: {
+                    declaredBinding: "verified",
+                    observedBinding: "matched",
+                    effectiveBinding: "verified",
+                    expectedContentDigest: "private-expected-digest",
+                },
+                judge: {
+                    runtimeId: "judge-1",
+                    displayName: "Codex Judge",
+                    modelId: "gpt-5.6-sol",
+                    effort: "high",
+                    status: "completed",
+                    attempts: 1,
+                    threadId: "private-judge-thread",
+                    traceReference: "/private/judge-trace.jsonl",
+                },
+                scoreContract: {
+                    schemaVersion: "rolling-skill-score-contract/v2",
+                    digest: "sha256:contract",
+                    criteria: [{
+                        id: "R1",
+                        title: "结果完整性",
+                        criterion: "结果必须覆盖用户要求的全部字段。",
+                        weight: 1,
+                        source: "dataset_rubric",
+                        criticalFailure: false,
+                    }],
+                    evidence: {entries: [{raw: "private evidence"}]},
+                },
+                judgment: {
+                    schemaVersion: "rolling-skill-judge-result/v2",
+                    contractDigest: "sha256:contract",
+                    assessments: [{
+                        criterionId: "R1",
+                        status: "scored",
+                        rating: 7,
+                        confidence: 0.9,
+                        verificationStatus: "verified",
+                        verifiableFields: ["平台、差额、执行率"],
+                        crossChecks: ["总计与明细一致"],
+                        evidenceRefs: ["response", "trace:L12"],
+                        rationale: "主要结果正确，但缺少一个汇总字段。",
+                    }],
+                },
+                computedScore: {
+                    schemaVersion: "rolling-skill-computed-score/v2",
+                    calculatorVersion: "unified-rubric/v1",
+                    contractDigest: "sha256:contract",
+                    activationMode: "automatic",
+                    totalScore: 70,
+                    scoreCapApplied: false,
+                    overallVerdict: "fail",
+                    outcomeTier: "usable_with_gaps",
+                    criticalFailures: [],
+                    diagnosticReasons: [],
+                    criterionScores: [{
+                        id: "R1",
+                        status: "scored",
+                        rating: 7,
+                        confidence: 0.9,
+                        verificationStatus: "verified",
+                        verifiableFields: ["平台、差额、执行率"],
+                        crossChecks: ["总计与明细一致"],
+                        points: 70,
+                        maxPoints: 100,
+                        criticalFailureTriggered: false,
+                    }],
+                },
+            }],
+        }
+        const fixture = createFixture({evaluationRun})
+
+        const result = await fixture.control.invoke({
+            token: fixture.issued.token,
+            method: "evaluations.get",
+            params: {runId: "run-1"},
+            sessionId: "operator-1",
+        })
+
+        assert.equal(result.run.judgeConfiguration.modelId, "gpt-5.6-sol")
+        assert.equal(result.run.results[0].runtimeConfiguration.modelId, "gpt-5.6-terra")
+        assert.equal(result.run.results[0].skillExecutionBinding.effectiveBinding, "verified")
+        assert.equal(result.run.results[0].judge.modelId, "gpt-5.6-sol")
+        assert.equal(result.run.results[0].scoreContract.criteria[0].title, "结果完整性")
+        assert.equal(result.run.results[0].computedScore.criterionScores[0].points, 70)
+        assert.equal(
+            result.run.results[0].judgment.assessments[0].rationale,
+            "主要结果正确，但缺少一个汇总字段。",
+        )
+        assert.equal(Object.hasOwn(result.run.results[0], "response"), false)
+        assert.equal(Object.hasOwn(result.run.results[0], "traceReference"), false)
+        assert.equal(Object.hasOwn(result.run.results[0].judge, "threadId"), false)
+        assert.equal(Object.hasOwn(result.run.results[0].scoreContract, "evidence"), false)
     })
 
     it("passes only parsed authority metadata and the policy scope filter to handlers", async () => {

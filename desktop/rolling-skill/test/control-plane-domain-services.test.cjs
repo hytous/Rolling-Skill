@@ -852,6 +852,13 @@ describe("control-plane domain services", () => {
                 effort: "high",
                 executablePath: "/private/bin/codex",
             }],
+            judgeConfiguration: {
+                runtimeId: "judge-1",
+                displayName: "Codex Judge",
+                modelId: "judge-model-1",
+                effort: "high",
+                executablePath: "/private/bin/codex",
+            },
             caseSnapshots: [{
                 id: "case-1",
                 question: "Private full question",
@@ -865,14 +872,63 @@ describe("control-plane domain services", () => {
                 gradingStatus: "completed",
                 durationMs: 1_500,
                 computedScore: {
+                    schemaVersion: "rolling-skill-computed-score/v2",
                     totalScore: 92,
                     outcomeTier: "formal_pass",
                     overallVerdict: "pass",
-                    criterionScores: [{id: "secret", score: 92}],
+                    criterionScores: [{
+                        id: "R1",
+                        status: "scored",
+                        rating: 9.2,
+                        confidence: 0.9,
+                        verificationStatus: "verified",
+                        verifiableFields: ["total"],
+                        crossChecks: ["details match total"],
+                        points: 92,
+                        maxPoints: 100,
+                        criticalFailureTriggered: false,
+                    }],
                 },
-                judgment: {summary: "Evidence-backed result", transcript: "private judge"},
+                scoreContract: {
+                    schemaVersion: "rolling-skill-score-contract/v2",
+                    digest: "sha256:contract",
+                    criteria: [{
+                        id: "R1",
+                        title: "Complete answer",
+                        criterion: "Return the requested total.",
+                        weight: 1,
+                        source: "dataset_rubric",
+                        criticalFailure: false,
+                    }],
+                    evidence: {entries: [{content: "private contract evidence"}]},
+                },
+                judgment: {
+                    schemaVersion: "rolling-skill-judge-result/v2",
+                    contractDigest: "sha256:contract",
+                    assessments: [{
+                        criterionId: "R1",
+                        status: "scored",
+                        rating: 9.2,
+                        confidence: 0.9,
+                        verificationStatus: "verified",
+                        verifiableFields: ["total"],
+                        crossChecks: ["details match total"],
+                        evidenceRefs: ["response"],
+                        rationale: "The requested total is complete.",
+                    }],
+                },
+                reasonSummary: "Evidence-backed result",
                 response: "private assistant response",
-                judge: {runtimeId: "judge-1", transcript: "private judge transcript"},
+                judge: {
+                    runtimeId: "judge-1",
+                    displayName: "Codex Judge",
+                    modelId: "judge-model-1",
+                    effort: "high",
+                    status: "completed",
+                    attempts: 1,
+                    threadId: "private-judge-thread",
+                    traceReference: "/private/judge-trace.jsonl",
+                },
                 traceReference: "/private/trace.jsonl",
                 traceEvidence: {entries: [{content: "private evidence"}]},
                 artifactRefs: [{
@@ -925,20 +981,40 @@ describe("control-plane domain services", () => {
             assert.deepEqual(run.skillReference, {id: "skill-1", name: "billing"})
             if (method !== "evaluations.list") {
                 assert.deepEqual(run.results[0].computedScore, {
+                    schemaVersion: "rolling-skill-computed-score/v2",
                     totalScore: 92,
                     outcomeTier: "formal_pass",
                     overallVerdict: "pass",
+                    criterionScores: [{
+                        id: "R1",
+                        status: "scored",
+                        rating: 9.2,
+                        confidence: 0.9,
+                        verificationStatus: "verified",
+                        verifiableFields: ["total"],
+                        crossChecks: ["details match total"],
+                        points: 92,
+                        maxPoints: 100,
+                        criticalFailureTriggered: false,
+                    }],
                 })
+                assert.equal(
+                    run.results[0].judgment.assessments[0].rationale,
+                    "The requested total is complete.",
+                )
+                assert.equal(run.results[0].judge.modelId, "judge-model-1")
+                assert.equal(run.judgeConfiguration.modelId, "judge-model-1")
                 assert.equal(run.results[0].reasonSummary, "Evidence-backed result")
                 assert.deepEqual(run.results[0].artifactRefs, [{
                     id: "artifact-result-1",
                     kind: "evaluation-summary",
                 }])
             }
-            assert.doesNotMatch(
-                JSON.stringify(result),
-                /private|response|judge|traceEvidence|traceReference|referenceAnswer|criterionScores|executablePath/iu,
-            )
+            const serialized = JSON.stringify(result)
+            assert.doesNotMatch(serialized, /private|traceEvidence|traceReference|referenceAnswer|executablePath/iu)
+            assert.equal(Object.hasOwn(run.results?.[0] ?? {}, "response"), false)
+            assert.equal(Object.hasOwn(run.results?.[0]?.judge ?? {}, "threadId"), false)
+            assert.equal(Object.hasOwn(run.results?.[0]?.scoreContract ?? {}, "evidence"), false)
             assert.doesNotThrow(() => parseControlOutput(method, result))
         }
     })

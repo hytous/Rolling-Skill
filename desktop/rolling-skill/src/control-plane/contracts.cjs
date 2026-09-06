@@ -149,10 +149,87 @@ const publicDatasetCase = z.object({
     updatedAt: boundedText(100, "Case update time").optional(),
 }).strict()
 
+const publicEvaluationRuntime = z.object({
+    runtimeId: id,
+    displayName: boundedText(500, "Runtime display name").optional(),
+    modelId: id.nullable().optional(),
+    effort: reasoningEffort.nullable().optional(),
+}).strict()
+
+const publicEvaluationCriterionScore = z.object({
+    id,
+    status: boundedText(80, "Evaluation criterion status").optional(),
+    rating: z.number().finite().min(0).max(10).optional(),
+    confidence: z.number().finite().min(0).max(1).optional(),
+    verificationStatus: boundedText(80, "Evaluation verification status").optional(),
+    verifiableFields: z.array(boundedText(4_096, "Evaluation verifiable field")).max(100).optional(),
+    crossChecks: z.array(boundedText(4_096, "Evaluation cross-check")).max(100).optional(),
+    points: z.number().finite().nullable().optional(),
+    deduction: z.number().finite().nonnegative().optional(),
+    maxPoints: z.number().finite().nonnegative().optional(),
+    criticalFailureTriggered: z.boolean().optional(),
+}).strict()
+
 const publicEvaluationScore = z.object({
+    schemaVersion: boundedText(200, "Evaluation score schema").optional(),
+    calculatorVersion: boundedText(200, "Evaluation score calculator").optional(),
+    contractDigest: boundedText(200, "Evaluation score contract digest").optional(),
+    activationMode: z.enum(["automatic", "explicit"]).optional(),
     totalScore: z.number().finite().optional(),
+    scoreCapApplied: z.boolean().optional(),
     outcomeTier: boundedText(80, "Evaluation outcome tier").optional(),
     overallVerdict: boundedText(80, "Evaluation verdict").optional(),
+    criticalFailures: z.array(id).max(100).optional(),
+    diagnosticReasons: z.array(boundedText(500, "Evaluation diagnostic reason")).max(100).optional(),
+    criterionScores: z.array(publicEvaluationCriterionScore).max(100).optional(),
+}).strict()
+
+const publicEvaluationAssessment = z.object({
+    criterionId: id,
+    status: boundedText(80, "Judge assessment status").optional(),
+    rating: z.number().finite().min(0).max(10).optional(),
+    confidence: z.number().finite().min(0).max(1).optional(),
+    verificationStatus: boundedText(80, "Judge verification status").optional(),
+    verifiableFields: z.array(boundedText(4_096, "Judge verifiable field")).max(100).optional(),
+    crossChecks: z.array(boundedText(4_096, "Judge cross-check")).max(100).optional(),
+    evidenceRefs: z.array(boundedText(1_000, "Judge evidence reference")).max(100).optional(),
+    rationale: boundedText(10_000, "Judge rationale").optional(),
+}).strict()
+
+const publicEvaluationJudgment = z.object({
+    schemaVersion: boundedText(200, "Judge result schema").optional(),
+    contractDigest: boundedText(200, "Judge contract digest").optional(),
+    assessments: z.array(publicEvaluationAssessment).max(100).optional(),
+}).strict()
+
+const publicEvaluationCriterion = z.object({
+    id,
+    title: z.string().max(1_000).optional(),
+    criterion: z.string().max(20_000).optional(),
+    weight: z.number().finite().nonnegative().optional(),
+    source: boundedText(200, "Evaluation criterion source").optional(),
+    mode: z.enum(["penalty", "automatic_failure"]).optional(),
+    maximumDeduction: z.number().finite().nonnegative().optional(),
+    criticalFailure: z.boolean().optional(),
+}).strict()
+
+const publicEvaluationScoreContract = z.object({
+    schemaVersion: boundedText(200, "Evaluation contract schema").optional(),
+    digest: boundedText(200, "Evaluation contract digest").optional(),
+    criteria: z.array(publicEvaluationCriterion).max(100).optional(),
+}).strict()
+
+const publicSkillExecutionBinding = z.object({
+    declaredBinding: boundedText(80, "Declared Skill binding").optional(),
+    observedBinding: boundedText(80, "Observed Skill binding").optional(),
+    effectiveBinding: boundedText(80, "Effective Skill binding").optional(),
+}).strict()
+
+const publicEvaluationJudge = publicEvaluationRuntime.extend({
+    status: boundedText(80, "Judge status").optional(),
+    attempts: z.number().int().nonnegative().optional(),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+    error: z.string().max(4_096).nullable().optional(),
 }).strict()
 
 const publicEvaluationResult = z.object({
@@ -163,19 +240,17 @@ const publicEvaluationResult = z.object({
     status: boundedText(80, "Evaluation result status"),
     gradingStatus: boundedText(80, "Evaluation grading status").optional(),
     durationMs: z.number().int().nonnegative().nullable().optional(),
+    runtimeConfiguration: publicEvaluationRuntime.optional(),
+    skillExecutionBinding: publicSkillExecutionBinding.optional(),
+    judge: publicEvaluationJudge.optional(),
+    scoreContract: publicEvaluationScoreContract.optional(),
+    judgment: publicEvaluationJudgment.optional(),
     computedScore: publicEvaluationScore.nullable().optional(),
     reasonSummary: z.string().max(4_096).nullable().optional(),
     artifactRefs: z.array(publicArtifactReference).max(100).optional(),
     error: z.string().max(4_096).nullable().optional(),
     startedAt: z.string().max(100).nullable().optional(),
     completedAt: z.string().max(100).nullable().optional(),
-}).strict()
-
-const publicEvaluationRuntime = z.object({
-    runtimeId: id,
-    displayName: boundedText(500, "Runtime display name").optional(),
-    modelId: id.nullable().optional(),
-    effort: reasoningEffort.nullable().optional(),
 }).strict()
 
 const publicEvaluationRun = z.object({
@@ -202,6 +277,7 @@ const publicEvaluationRun = z.object({
         cancelled: z.number().int().nonnegative(),
     }).strict().optional(),
     runtimeConfigurations: z.array(publicEvaluationRuntime).max(32).optional(),
+    judgeConfiguration: publicEvaluationRuntime.optional(),
     results: z.array(publicEvaluationResult).max(1_000).optional(),
     artifactRefs: z.array(publicArtifactReference).max(100).optional(),
     error: z.string().max(4_096).nullable().optional(),

@@ -653,10 +653,40 @@ function smokePublicEvaluationResult(result) {
         status: result.status,
         ...(result.gradingStatus ? {gradingStatus: result.gradingStatus} : {}),
         ...(result.durationMs === undefined ? {} : {durationMs: result.durationMs}),
+        ...(result.runtimeConfiguration ? {runtimeConfiguration: {
+            runtimeId: result.runtimeConfiguration.runtimeId,
+            displayName: result.runtimeConfiguration.displayName,
+            modelId: result.runtimeConfiguration.modelId ?? null,
+            effort: result.runtimeConfiguration.effort ?? null,
+        }} : {}),
+        ...(result.skillExecutionBinding ? {skillExecutionBinding: {
+            declaredBinding: result.skillExecutionBinding.declaredBinding,
+            observedBinding: result.skillExecutionBinding.observedBinding,
+            effectiveBinding: result.skillExecutionBinding.effectiveBinding,
+        }} : {}),
+        ...(result.judge ? {judge: {
+            runtimeId: result.judge.runtimeId,
+            displayName: result.judge.displayName,
+            modelId: result.judge.modelId ?? null,
+            effort: result.judge.effort ?? null,
+            status: result.judge.status,
+        }} : {}),
+        ...(result.scoreContract?.criteria ? {scoreContract: {
+            schemaVersion: result.scoreContract.schemaVersion,
+            criteria: structuredClone(result.scoreContract.criteria),
+        }} : {}),
+        ...(result.judgment?.assessments ? {judgment: {
+            schemaVersion: result.judgment.schemaVersion,
+            assessments: structuredClone(result.judgment.assessments),
+        }} : {}),
         ...(score ? {computedScore: {
+            ...(score.schemaVersion ? {schemaVersion: score.schemaVersion} : {}),
             ...(totalScore === null ? {} : {totalScore}),
             ...(score.outcomeTier ? {outcomeTier: score.outcomeTier} : {}),
             ...(score.overallVerdict ? {overallVerdict: score.overallVerdict} : {}),
+            ...(Array.isArray(score.criterionScores)
+                ? {criterionScores: structuredClone(score.criterionScores)}
+                : {}),
         }} : {}),
         ...(result.gradingError ? {reasonSummary: result.gradingError} : {}),
     }
@@ -691,6 +721,12 @@ function smokePublicEvaluationRun(run, includeResults = false) {
                 effort,
             }),
         )} : {}),
+        ...(run.judgeConfiguration ? {judgeConfiguration: {
+            runtimeId: run.judgeConfiguration.runtimeId,
+            displayName: run.judgeConfiguration.displayName,
+            modelId: run.judgeConfiguration.modelId ?? null,
+            effort: run.judgeConfiguration.effort ?? null,
+        }} : {}),
         ...(includeResults ? {
             results: results.map(smokePublicEvaluationResult),
             resultsTruncated: false,
@@ -725,6 +761,12 @@ const smokeEvaluationRun = {
             effort: "high",
         },
     ],
+    judgeConfiguration: {
+        runtimeId: "codex:renderer-smoke",
+        displayName: "Codex Judge",
+        modelId: "gpt-5.6-sol",
+        effort: "high",
+    },
     results: [
         {
             id: "result-smoke-codex-one",
@@ -740,6 +782,18 @@ const smokeEvaluationRun = {
             gradingStatus: "completed",
             durationMs: 65_000,
             response: "Smoke evaluation answer",
+            skillExecutionBinding: {
+                declaredBinding: "verified",
+                observedBinding: "matched",
+                effectiveBinding: "verified",
+            },
+            judge: {
+                runtimeId: "codex:renderer-smoke",
+                displayName: "Codex Judge",
+                modelId: "gpt-5.6-sol",
+                effort: "high",
+                status: "completed",
+            },
             scoreContract: {
                 schemaVersion: "rolling-skill-score-contract/v2",
                 criteria: [{
@@ -751,6 +805,7 @@ const smokeEvaluationRun = {
                 }],
             },
             judgment: {
+                schemaVersion: "rolling-skill-judge-result/v2",
                 assessments: [{
                     criterionId: "R1",
                     status: "scored",
