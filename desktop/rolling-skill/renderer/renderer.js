@@ -629,6 +629,8 @@ const translations = {
         releaseVersion: "Release version",
         deprecateVersion: "Deprecate",
         versionLabel: "Version label",
+        managedOptimizationVersion: "Improved Skill",
+        managedOptimizationOrigin: "Optimization task {run} · Epoch {epoch}",
         managedWorking: "Working",
         managedCandidate: "Candidate",
         managedReleased: "Released",
@@ -1483,6 +1485,8 @@ const translations = {
         releaseVersion: "发布版本",
         deprecateVersion: "弃用",
         versionLabel: "版本标识",
+        managedOptimizationVersion: "Skill 改进版",
+        managedOptimizationOrigin: "所属优化任务 {run} · Epoch {epoch}",
         managedWorking: "工作区",
         managedCandidate: "候选",
         managedReleased: "已发布",
@@ -6290,7 +6294,7 @@ function renderSkillManagementWorkbench() {
         const card = node("article", "managed-version-card")
         const heading = node("div", "managed-version-heading")
         heading.append(
-            node("strong", "", version.title || version.versionLabel || (version.optimizationRunId ? "Skill 改进版" : version.commit.slice(0, 8))),
+            node("strong", "", version.title || version.versionLabel || (version.optimizationRunId ? t("managedOptimizationVersion") : version.commit.slice(0, 8))),
             node("span", `managed-version-status ${status.className}`, status.label),
         )
         card.append(
@@ -6299,7 +6303,9 @@ function renderSkillManagementWorkbench() {
             node("small", "", new Date(version.releasedAt ?? version.createdAt).toLocaleString(state.settings.language)),
         )
         if (version.optimizationRunId) {
-            card.append(node("small", "", `所属优化任务 ${version.optimizationRunId.slice(0, 8)} · Epoch ${version.optimizationEpoch}`))
+            card.append(node("small", "", formatMessage("managedOptimizationOrigin", {
+                run: version.optimizationRunId.slice(0, 8), epoch: version.optimizationEpoch,
+            })))
         }
         const actions = node("div", "managed-version-actions")
         if (version.state === "candidate") {
