@@ -141,6 +141,15 @@ function directedRunOutput(state = "editing") {
 }
 
 describe("optimization control contracts", () => {
+    it("accepts only bounded sampled search options and exposes the selected candidate artifact", () => {
+        const input = {...compactConfig(), idempotencyKey: "sampled-preflight", optimizationDirection: null, search: {caseWorkers: 3, candidatesPerRound: 3}}
+        assert.deepEqual(parseControlInput("optimization.preflight", input).search, input.search)
+        assert.throws(() => parseControlInput("optimization.preflight", {...input, search: {caseWorkers: 9}}))
+        assert.throws(() => parseControlInput("optimization.preflight", {...input, search: {semanticLabels: true}}))
+        const output = runOutput()
+        output.run.checkpoint.selectedCandidateArtifactId = "artifact-selected"
+        assert.equal(parseControlOutput("optimization.get", output).run.checkpoint.selectedCandidateArtifactId, "artifact-selected")
+    })
     it("accepts strict v3 direction inputs and safe Playbook output identity", () => {
         const start = parseControlInput("optimization.start", {
             ...directedConfig(),

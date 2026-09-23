@@ -66,6 +66,69 @@ function passingJudge(caseEntry, contract = buildScoreContract(caseEntry)) {
 }
 
 describe("multi-runtime evaluation runner", () => {
+    it("bounds parallel Case workers, isolates workspaces, and drains grading before completion", async (t) => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-workers-"))
+        t.after(() => rmSync(directory, {recursive: true, force: true}))
+        let active = 0, maximum = 0, stopped = 0, graded = 0
+        const workspaces = new Set(), completed = new Set()
+        const runner = new EvaluationRunner({
+            store: {updateEvaluationRun() {}, updateEvaluationResult() {}},
+            workspaceRoot: directory, traceDirectory: directory,
+            runtimeRegistry: {createClient() {
+                let workspace
+                return {start: async () => {}, stop: async () => {stopped += 1},
+                    setWorkspace: async (path) => {workspace = path},
+                    runEvaluationCase: async ({question}) => {
+                        active += 1; maximum = Math.max(maximum, active)
+                        assert.ok(workspace.startsWith(directory))
+                        workspaces.add(workspace)
+                        await new Promise((resolve) => setTimeout(resolve, 5))
+                        active -= 1; completed.add(question)
+                        return {response: "answer", durationMs: 5}
+                    },
+                }
+            }},
+        })
+        // Exercise the real grading queue/barrier without making external LLM requests.
+        runner.runGradingQueue = async (_run, queue) => {
+            while (await queue.next()) {
+                await new Promise((resolve) => setTimeout(resolve, 7)); graded += 1
+            }
+        }
+        const run = {id: "workers", runtimeConfigurations: [{runtimeId: "target", providerId: "codex", executablePath: "/target"}],
+            results: Array.from({length: 6}, (_, i) => ({id: `r${i}`, runtimeId: "target", status: "queued", caseSnapshot: curatedCase(`c${i}`, `q${i}`)}))}
+        const outcome = await runner.run(run, {caseWorkers: 2})
+        assert.equal(outcome.status, "completed")
+        assert.equal(maximum, 2)
+        assert.equal(stopped, 2)
+        assert.equal(graded, 6)
+        assert.equal(completed.size, 6)
+        assert.equal(workspaces.size, 6)
+        assert.throws(() => runner.run({...run, id: "invalid"}, {caseWorkers: 9}), /workers/)
+    })
+
+    it("waits for all concurrent workers to stop when one client cannot start", async (t) => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-workers-failure-"))
+        t.after(() => rmSync(directory, {recursive: true, force: true}))
+        let clients = 0, finished = false, stopped = 0
+        const runner = new EvaluationRunner({
+            store: {updateEvaluationRun() {}, updateEvaluationResult() {}}, workspaceRoot: directory, traceDirectory: directory,
+            runtimeRegistry: {createClient() {
+                const index = clients++
+                return {start: async () => {if (index === 0) throw new Error("startup failed")},
+                    setWorkspace() {}, stop: async () => {stopped += 1},
+                    runEvaluationCase: async () => {
+                        await new Promise((resolve) => setTimeout(resolve, 10)); finished = true
+                        return {response: "done"}
+                    }}
+            }},
+        })
+        const outcome = await runner.run({id: "failed-worker", runtimeConfigurations: [{runtimeId: "target", providerId: "codex", executablePath: "/target"}],
+            results: [0, 1].map((i) => ({id: `r${i}`, runtimeId: "target", status: "queued", caseSnapshot: curatedCase(`c${i}`, `q${i}`)}))}, {caseWorkers: 2})
+        assert.equal(outcome.status, "partial")
+        assert.equal(finished, true)
+        assert.equal(stopped, 2)
+    })
     it("holds and releases one run-level power lease even when execution fails", async () => {
         const events = []
         const runner = new EvaluationRunner({

@@ -17644,10 +17644,79 @@ var require_contracts = __commonJS({
       createdAt: boundedText(100, "Case creation time").optional(),
       updatedAt: boundedText(100, "Case update time").optional()
     }).strict();
+    var publicEvaluationRuntime = z2.object({
+      runtimeId: id,
+      displayName: boundedText(500, "Runtime display name").optional(),
+      modelId: id.nullable().optional(),
+      effort: reasoningEffort.nullable().optional()
+    }).strict();
+    var publicEvaluationCriterionScore = z2.object({
+      id,
+      status: boundedText(80, "Evaluation criterion status").optional(),
+      rating: z2.number().finite().min(0).max(10).optional(),
+      confidence: z2.number().finite().min(0).max(1).optional(),
+      verificationStatus: boundedText(80, "Evaluation verification status").optional(),
+      verifiableFields: z2.array(boundedText(4096, "Evaluation verifiable field")).max(100).optional(),
+      crossChecks: z2.array(boundedText(4096, "Evaluation cross-check")).max(100).optional(),
+      points: z2.number().finite().nullable().optional(),
+      deduction: z2.number().finite().nonnegative().optional(),
+      maxPoints: z2.number().finite().nonnegative().optional(),
+      criticalFailureTriggered: z2.boolean().optional()
+    }).strict();
     var publicEvaluationScore = z2.object({
+      schemaVersion: boundedText(200, "Evaluation score schema").optional(),
+      calculatorVersion: boundedText(200, "Evaluation score calculator").optional(),
+      contractDigest: boundedText(200, "Evaluation score contract digest").optional(),
+      activationMode: z2.enum(["automatic", "explicit"]).optional(),
       totalScore: z2.number().finite().optional(),
+      scoreCapApplied: z2.boolean().optional(),
       outcomeTier: boundedText(80, "Evaluation outcome tier").optional(),
-      overallVerdict: boundedText(80, "Evaluation verdict").optional()
+      overallVerdict: boundedText(80, "Evaluation verdict").optional(),
+      criticalFailures: z2.array(id).max(100).optional(),
+      diagnosticReasons: z2.array(boundedText(500, "Evaluation diagnostic reason")).max(100).optional(),
+      criterionScores: z2.array(publicEvaluationCriterionScore).max(100).optional()
+    }).strict();
+    var publicEvaluationAssessment = z2.object({
+      criterionId: id,
+      status: boundedText(80, "Judge assessment status").optional(),
+      rating: z2.number().finite().min(0).max(10).optional(),
+      confidence: z2.number().finite().min(0).max(1).optional(),
+      verificationStatus: boundedText(80, "Judge verification status").optional(),
+      verifiableFields: z2.array(boundedText(4096, "Judge verifiable field")).max(100).optional(),
+      crossChecks: z2.array(boundedText(4096, "Judge cross-check")).max(100).optional(),
+      evidenceRefs: z2.array(boundedText(1e3, "Judge evidence reference")).max(100).optional(),
+      rationale: boundedText(1e4, "Judge rationale").optional()
+    }).strict();
+    var publicEvaluationJudgment = z2.object({
+      schemaVersion: boundedText(200, "Judge result schema").optional(),
+      contractDigest: boundedText(200, "Judge contract digest").optional(),
+      assessments: z2.array(publicEvaluationAssessment).max(100).optional()
+    }).strict();
+    var publicEvaluationCriterion = z2.object({
+      id,
+      title: z2.string().max(1e3).optional(),
+      criterion: z2.string().max(2e4).optional(),
+      weight: z2.number().finite().nonnegative().optional(),
+      source: boundedText(200, "Evaluation criterion source").optional(),
+      mode: z2.enum(["penalty", "automatic_failure"]).optional(),
+      maximumDeduction: z2.number().finite().nonnegative().optional(),
+      criticalFailure: z2.boolean().optional()
+    }).strict();
+    var publicEvaluationScoreContract = z2.object({
+      schemaVersion: boundedText(200, "Evaluation contract schema").optional(),
+      digest: boundedText(200, "Evaluation contract digest").optional(),
+      criteria: z2.array(publicEvaluationCriterion).max(100).optional()
+    }).strict();
+    var publicSkillExecutionBinding = z2.object({
+      declaredBinding: boundedText(80, "Declared Skill binding").optional(),
+      observedBinding: boundedText(80, "Observed Skill binding").optional(),
+      effectiveBinding: boundedText(80, "Effective Skill binding").optional()
+    }).strict();
+    var publicEvaluationJudge = publicEvaluationRuntime.extend({
+      status: boundedText(80, "Judge status").optional(),
+      attempts: z2.number().int().nonnegative().optional(),
+      durationMs: z2.number().int().nonnegative().nullable().optional(),
+      error: z2.string().max(4096).nullable().optional()
     }).strict();
     var publicEvaluationResult = z2.object({
       id,
@@ -17657,18 +17726,17 @@ var require_contracts = __commonJS({
       status: boundedText(80, "Evaluation result status"),
       gradingStatus: boundedText(80, "Evaluation grading status").optional(),
       durationMs: z2.number().int().nonnegative().nullable().optional(),
+      runtimeConfiguration: publicEvaluationRuntime.optional(),
+      skillExecutionBinding: publicSkillExecutionBinding.optional(),
+      judge: publicEvaluationJudge.optional(),
+      scoreContract: publicEvaluationScoreContract.optional(),
+      judgment: publicEvaluationJudgment.optional(),
       computedScore: publicEvaluationScore.nullable().optional(),
       reasonSummary: z2.string().max(4096).nullable().optional(),
       artifactRefs: z2.array(publicArtifactReference).max(100).optional(),
       error: z2.string().max(4096).nullable().optional(),
       startedAt: z2.string().max(100).nullable().optional(),
       completedAt: z2.string().max(100).nullable().optional()
-    }).strict();
-    var publicEvaluationRuntime = z2.object({
-      runtimeId: id,
-      displayName: boundedText(500, "Runtime display name").optional(),
-      modelId: id.nullable().optional(),
-      effort: reasoningEffort.nullable().optional()
     }).strict();
     var publicEvaluationRun = z2.object({
       id,
@@ -17694,6 +17762,7 @@ var require_contracts = __commonJS({
         cancelled: z2.number().int().nonnegative()
       }).strict().optional(),
       runtimeConfigurations: z2.array(publicEvaluationRuntime).max(32).optional(),
+      judgeConfiguration: publicEvaluationRuntime.optional(),
       results: z2.array(publicEvaluationResult).max(1e3).optional(),
       artifactRefs: z2.array(publicArtifactReference).max(100).optional(),
       error: z2.string().max(4096).nullable().optional(),
@@ -18034,7 +18103,16 @@ var require_contracts = __commonJS({
       judge: optimizationRuntime,
       activationMode: z2.enum(["automatic", "explicit"]),
       limits: compactOptimizationLimits,
-      optimizationDirection: z2.string().max(8e3).nullable()
+      optimizationDirection: z2.string().max(8e3).nullable(),
+      search: z2.object({
+        candidatesPerRound: z2.number().int().min(1).max(8).optional(),
+        parentLimit: z2.number().int().min(1).max(4).optional(),
+        failureSamples: z2.number().int().min(1).max(24).optional(),
+        successSamples: z2.number().int().min(0).max(8).optional(),
+        feedbackCharacters: z2.number().int().min(2e3).max(18e3).optional(),
+        caseWorkers: z2.number().int().min(1).max(8).optional(),
+        seed: z2.string().min(1).max(200).optional()
+      }).strict().optional()
     }).strict().superRefine((input, context) => {
       const runtimeIds = input.targets.map((target) => target.runtimeId);
       if (new Set(runtimeIds).size !== runtimeIds.length) {
@@ -18135,6 +18213,7 @@ var require_contracts = __commonJS({
       reportArtifactId: id.optional(),
       reportDigest: boundedText(80, "Optimization report digest").optional(),
       finalApprovalId: id.nullable().optional(),
+      selectedCandidateArtifactId: id.nullable().optional(),
       releaseApprovalId: id.nullable().optional(),
       installApprovalId: id.nullable().optional(),
       releasedVersionId: id.nullable().optional(),
@@ -18188,6 +18267,7 @@ var require_contracts = __commonJS({
       publicOptimizationRunBase.extend({
         limits: compactOptimizationLimits,
         optimizationDirection: z2.string().max(8e3).nullable(),
+        search: optimizationConfigV3Input.shape.search,
         playbook: publicOptimizationPlaybook
       }).strict(),
       publicOptimizationRunBase.extend({

@@ -128,6 +128,17 @@ function freezeInput(overrides = {}) {
 }
 
 describe("optimization contract", () => {
+    it("freezes optional sampled search configuration without changing legacy defaults", () => {
+        const input = freezeInput({config: compactConfig({optimizationDirection: null, search: {caseWorkers: 3}}), playbook: currentOptimizationPlaybook()})
+        const frozen = freezeOptimizationRun(input)
+        assert.equal(frozen.search.caseWorkers, 3)
+        assert.equal(frozen.search.candidatesPerRound, 3)
+        assert.equal(frozen.search.parentLimit, 2)
+        assert.deepEqual(validateFrozenOptimizationRun(frozen), frozen)
+        assert.throws(() => validateFrozenOptimizationRun({...frozen, search: {...frozen.search, seed: "changed"}}), /digest/i)
+        assert.equal(parseOptimizationConfig(compactConfig()).search, undefined)
+        assert.throws(() => parseOptimizationConfig(compactConfig({optimizationDirection: null, search: {caseWorkers: 9}})), /workers/i)
+    })
     it("normalizes an optional optimization direction into a v3 configuration", () => {
         const directed = parseOptimizationConfig(compactConfig({
             optimizationDirection: "  改善异常下钻  ",

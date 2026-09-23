@@ -468,14 +468,18 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(`${operator}\n${optimization}`, /capabilityId|socketPath|childEnvironment|executablePath\s*:/u)
     })
 
-    it("starts v3 optimization directly with an optional direction and only an Epoch limit", () => {
+    it("starts v3 optimization with Epoch-only stopping limits and opt-in candidate search", () => {
         const optimization = source("workbench/OptimizationPanel.tsx")
         const setup = source("workbench/OptimizationSetupFields.tsx")
         const locale = source("locale.ts")
         const combined = `${optimization}\n${setup}`
 
-        assert.match(setup, /export interface OptimizationTuning\s*\{\s*activationMode:\s*"automatic"\s*\|\s*"explicit"\s*maxEpochs:\s*string\s*\}/u)
-        assert.match(setup, /return\s*\{\s*limits:\s*\{maxEpochs\}\s*\}/u)
+        assert.match(setup, /export interface OptimizationTuning\s*\{\s*activationMode:\s*"automatic"\s*\|\s*"explicit"\s*maxEpochs:\s*string/u)
+        for (const [field, type] of [["sampledSearch", "boolean"], ["candidatesPerRound", "string"], ["failureSamples", "string"], ["caseWorkers", "string"]]) {
+            assert.match(setup, new RegExp(`${field}\\?:\\s*${type}`, "u"))
+        }
+        assert.match(setup, /const search = value\.sampledSearch \?/u)
+        assert.match(setup, /return\s*\{limits:\s*\{maxEpochs\},\s*\.\.\.\(search \? \{search\} : \{\}\)\}/u)
         assert.match(optimization, /const \[optimizationDirection, setOptimizationDirection\] = useState\(""\)/u)
         assert.match(optimization, /optimizationDirection:\s*optimizationDirection\.trim\(\)\s*\|\|\s*null/u)
         assert.match(optimization, /maxLength=\{8_000\}/u)

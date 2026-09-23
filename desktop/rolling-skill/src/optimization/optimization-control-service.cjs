@@ -130,6 +130,7 @@ function publicCheckpoint(value = {}, {legacy = false} = {}) {
         "reportArtifactId",
         "reportDigest",
         "finalApprovalId",
+        "selectedCandidateArtifactId",
         "releaseApprovalId",
         "installApprovalId",
         "releasedVersionId",
@@ -280,6 +281,7 @@ function publicRun(run, readArtifact = () => null) {
         judge: structuredClone(snapshot.judge),
         activationMode: snapshot.activationMode,
         limits: structuredClone(snapshot.limits),
+        ...(snapshot.search ? {search: structuredClone(snapshot.search)} : {}),
         ...(v3 ? {
             optimizationDirection: snapshot.optimizationDirection,
             playbook: {

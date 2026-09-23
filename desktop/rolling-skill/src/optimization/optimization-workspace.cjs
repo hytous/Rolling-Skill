@@ -260,6 +260,31 @@ class OptimizationWorkspaceManager {
         return this.enqueue(() => this.#createCandidate(input))
     }
 
+    prepareParent(runId, parent) {
+        return this.enqueue(async () => {
+            const record = this.workspaces.get(requiredId(runId, "Optimization Run"))
+            if (!record) throw new Error("Unknown registered Optimization workspace")
+            this.#verifyWorkspace(record)
+            if (await this.git.defaultBranch(record.workspacePath) !== record.branchName ||
+                (await this.git.status(record.workspacePath)).dirty) {
+                throw new Error("Cannot prepare parent over uncommitted workspace changes")
+            }
+            const stored = this.store.getVersion(parent.id ?? parent.versionId)
+            if (stored.skillId !== record.skillId || stored.repositoryId !== record.repositoryId ||
+                stored.commit !== parent.commit || stored.contentDigest !== parent.contentDigest) {
+                throw new Error("Candidate parent does not match a stored Skill version")
+            }
+            // Keep the run branch and all evaluated commits reachable. Restore
+            // only this managed Skill's tracked tree, never a user checkout.
+            await this.git.run(["restore", `--source=${stored.commit}`, "--staged", "--worktree", "--", record.skillRoot], {
+                cwd: record.workspacePath,
+            })
+            const snapshot = snapshotManagedSkill(join(record.workspacePath, record.skillRoot), this.scanLimits)
+            if (snapshot.digest !== stored.contentDigest) throw new Error("Prepared parent content digest mismatch")
+            return workspaceCopy(record)
+        })
+    }
+
     async #createCandidate(input) {
         exactKeys(input, ["runId", "epoch", "message", ...(Object.hasOwn(input, "title") ? ["title"] : [])], "Optimization Candidate input")
         const runId = requiredId(input.runId, "Optimization Run")
@@ -358,6 +383,9 @@ class OptimizationWorkspaceManager {
             this.#verifyWorkspace(record)
             if (await this.git.defaultBranch(record.workspacePath) !== record.branchName) {
                 throw new Error("Optimization workspace branch identity changed")
+            }
+            if ((await this.git.status(record.workspacePath)).dirty) {
+                throw new Error("Optimization workspace has uncommitted changes; retained for recovery")
             }
             await this.git.removeWorktree(record.repositoryPath, record.workspacePath)
             this.workspaces.delete(runId)

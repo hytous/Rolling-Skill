@@ -2,6 +2,7 @@
 
 const {parseOptimizationDecision} = require("./optimization-contract.cjs")
 const {compareEvaluationRuns, evaluateStopRules} = require("./optimization-analysis.cjs")
+const {sampleFeedback, selectCandidates} = require("./optimization-search.cjs")
 
 const SUCCESSFUL_INSTALLATION_STATUSES = new Set(["succeeded"])
 const RECOVERY_INSTALLATION_OPERATIONS = new Set(["experiment_restore", "experiment_remove"])
@@ -284,7 +285,8 @@ class OptimizationRunner {
         const operation = this.#releaseAndInstall(control, {
             epochId: epoch.id,
             epochNumber: epoch.number,
-            candidate: control.currentCandidate,
+            candidate: run.snapshot.search && run.checkpoint.selectedCandidateArtifactId
+                ? this.#readArtifact(run.checkpoint.selectedCandidateArtifactId) : control.currentCandidate,
             stopReason: run.checkpoint.stopReason,
         }).catch((error) => this.#restore(control, "failed", error)).finally(() => {
             if (this.controls.get(runId) === control) this.controls.delete(runId)
@@ -379,6 +381,37 @@ class OptimizationRunner {
         return JSON.parse(Buffer.from(body).toString("utf8"))
     }
 
+    #searchEntries(control, through = Infinity) {
+        const run = this.store.getRun(control.runId)
+        const baseline = {...run.snapshot.baseline, id: run.snapshot.baseline.versionId}
+        return [{id: baseline.id, candidate: baseline, evaluation: control.baselineEvaluation, artifactId: null},
+            ...run.epochs.filter((e) => e.number <= through && e.candidateArtifactId && e.evaluationArtifactIds?.length)
+                .map((e) => {
+                    const candidate = this.#readArtifact(e.candidateArtifactId)
+                    return {id: candidate.id, candidate, artifactId: e.candidateArtifactId,
+                        evaluation: this.#readArtifact(e.evaluationArtifactIds[0])}
+                })]
+    }
+
+    async #prepareSearchCandidate(control, epoch) {
+        const run = this.store.getRun(control.runId)
+        const search = run.snapshot.search
+        if (run.checkpoint.searchRequest?.epoch === epoch) return
+        const groupStart = Math.floor((epoch - 1) / search.candidatesPerRound) * search.candidatesPerRound
+        const entries = this.#searchEntries(control, groupStart)
+        const selection = selectCandidates(entries, {parentLimit: search.parentLimit, baselineId: run.snapshot.baseline.versionId})
+        const parentId = selection.parentIds[(epoch - groupStart - 1) % selection.parentIds.length]
+        const parent = entries.find((e) => e.id === parentId)
+        const feedback = sampleFeedback({runId: run.id, parentId, epoch, evaluation: parent.evaluation, search})
+        if (!feedback.cards.length) throw new Error("No valid parent feedback is available for candidate generation")
+        if (typeof this.workspaceManager.prepareParent !== "function") throw new Error("Workspace does not support multi-candidate search")
+        await this.workspaceManager.prepareParent(run.id, parent.candidate)
+        const request = {epoch, round: Math.floor(groupStart / search.candidatesPerRound) + 1,
+            parentId, parentCommit: parent.candidate.commit, feedback}
+        const artifact = this.#artifact(control.parentJobId, "optimization-feedback", `feedback-${epoch}.json`, request)
+        this.store.updateCheckpoint(run.id, {searchRequest: request, feedbackArtifactId: artifact.id})
+    }
+
     #prepareResume(control) {
         const run = this.store.getRun(control.runId)
         const epoch = run.epochs.at(-1)
@@ -393,6 +426,7 @@ class OptimizationRunner {
         ))
         if (evaluatedEpoch) {
             control.previousCandidate = this.#readArtifact(evaluatedEpoch.candidateArtifactId)
+            control.currentCandidate = control.previousCandidate
             control.previousEvaluation = this.#readArtifact(evaluatedEpoch.evaluationArtifactIds[0])
         } else {
             control.previousEvaluation = control.baselineEvaluation
@@ -403,11 +437,15 @@ class OptimizationRunner {
             const completeEvidence = epoch.candidateArtifactId &&
                 epoch.installArtifactIds?.length && epoch.evaluationArtifactIds?.length &&
                 epoch.analysisArtifactId && epoch.decisionArtifactId
-            this.store.updateEpoch(control.runId, epoch.id, {
-                status: completeEvidence ? "completed" : "cancelled",
-            })
+            if (completeEvidence && run.snapshot.search && epoch.number >= run.snapshot.limits.maxEpochs) {
+                control.resumeSearchFinish = true
+            } else {
+                this.store.updateEpoch(control.runId, epoch.id, {
+                    status: completeEvidence ? "completed" : "cancelled",
+                })
+            }
         }
-        this.#transition(control, "editing", {paused: false})
+        this.#transition(control, control.resumeSearchFinish ? "deciding" : "editing", {paused: false})
     }
 
     #checkpoint(control, patch = {}) {
@@ -629,10 +667,15 @@ class OptimizationRunner {
                     })
                 }
                 this.#transition(control, "editing")
-            } else if (!(control.resumePrepared === true && run.state === "editing")) {
+            } else if (!(control.resumePrepared === true && (run.state === "editing" || control.resumeSearchFinish && run.state === "deciding"))) {
                 throw new Error("Optimization Run must start in preflight or a prepared resume")
             }
 
+            if (control.resumeSearchFinish) {
+                const last = this.store.getRun(control.runId).epochs.at(-1)
+                return await this.#finishSearch(control, {epochId: last.id, epochNumber: last.number, stopReason: "max_epochs_reached"},
+                    selectCandidates(this.#searchEntries(control), {parentLimit: run.snapshot.search.parentLimit, baselineId: run.snapshot.baseline.versionId}))
+            }
             while (true) {
                 if (control.cancelRequested) {
                     terminalIntent = "cancelled"
@@ -641,6 +684,7 @@ class OptimizationRunner {
                 const created = control.resumeEditingEpoch ?? this.store.createEpoch(control.runId)
                 control.resumeEditingEpoch = null
                 const epochNumber = created.index
+                if (run.snapshot.search) await this.#prepareSearchCandidate(control, epochNumber)
                 const submission = await this.operatorGateway.requestCandidate({
                     run: boundedRunSummary(this.store.getRun(control.runId)),
                     epoch: epochNumber,
@@ -741,7 +785,11 @@ class OptimizationRunner {
                 })
                 let requestedDecision
                 try {
-                    requestedDecision = await this.#requestDecision(control, {
+                    requestedDecision = run.snapshot.search ? {
+                        schemaVersion: "rolling-skill-optimization-decision/v1",
+                        action: epochNumber >= run.snapshot.limits.maxEpochs ? "finish" : "continue",
+                        rationale: "Fixed candidate budget; selection uses complete common regression results, not sampled feedback.",
+                    } : await this.#requestDecision(control, {
                         run: boundedRunSummary(this.store.getRun(control.runId)),
                         epoch: epochNumber,
                         analysis: boundedAnalysisSummary(provisional),
@@ -754,7 +802,16 @@ class OptimizationRunner {
                     }, errorRecord(error))
                     return {runId: control.runId, status: "paused", reason: error.code}
                 }
-                const analysis = compareEvaluationRuns({...analysisInput, agentDecision: requestedDecision})
+                const analysis = clone(compareEvaluationRuns({...analysisInput, agentDecision: requestedDecision}))
+                let selection = null
+                if (run.snapshot.search) {
+                    selection = selectCandidates(this.#searchEntries(control), {
+                        parentLimit: run.snapshot.search.parentLimit, baselineId: run.snapshot.baseline.versionId,
+                    })
+                    analysis.search = selection
+                    analysis.feedbackArtifactId = this.store.getRun(control.runId).checkpoint.feedbackArtifactId
+                    analysis.parentId = this.store.getRun(control.runId).checkpoint.searchRequest.parentId
+                }
                 const analysisArtifact = this.#artifact(
                     control.parentJobId,
                     "optimization-analysis",
@@ -796,6 +853,11 @@ class OptimizationRunner {
                         Object.assign(new Error(stopDecision.reason), {code: stopDecision.reason}),
                     )
                 }
+                if (selection) {
+                    return await this.#finishSearch(control, {
+                        epochId: created.epochId, epochNumber, stopReason: stopDecision.reason,
+                    }, selection)
+                }
                 return await this.#releaseAndInstall(control, {
                     epochId: created.epochId,
                     epochNumber,
@@ -817,6 +879,28 @@ class OptimizationRunner {
                 return {runId: control.runId, status: "paused", reason: "app_shutdown"}
             }
             return this.#restore(control, terminalIntent, error)
+        }
+    }
+
+    async #finishSearch(control, context, selection) {
+        const winner = this.#searchEntries(control).find((e) => e.id === selection.winnerId)
+        this.store.updateCheckpoint(control.runId, {
+            selectedCandidateArtifactId: winner.artifactId, selection, stopReason: context.stopReason,
+        })
+        if (!winner.artifactId) {
+            this.store.updateEpoch(control.runId, context.epochId, {status: "succeeded"})
+            return this.#restore(control, "succeeded", null)
+        }
+        return this.#releaseAndInstall(control, {...context, candidate: winner.candidate})
+    }
+
+    async #cleanupWorkspace(control) {
+        try {
+            await this.workspaceManager.cleanup?.(control.runId)
+        } catch (error) {
+            // Cleanup is not an installation failure. Keep uncommitted work and
+            // report it without rolling back an already approved release.
+            this.store.updateCheckpoint(control.runId, {workspaceRetained: true, workspaceCleanupError: errorRecord(error)})
         }
     }
 
@@ -935,7 +1019,7 @@ class OptimizationRunner {
         this.onChanged({runId: control.runId, state: "installing"})
         this.store.updateEpoch(control.runId, context.epochId, {status: "succeeded"})
         this.#transition(control, "succeeded", null, null)
-        await this.workspaceManager.cleanup?.(control.runId)
+        await this.#cleanupWorkspace(control)
         return {runId: control.runId, status: "succeeded", releasedVersionId: released.id}
     }
 
@@ -948,11 +1032,12 @@ class OptimizationRunner {
                     status: terminalState === "cancelled" ? "cancelled" : "failed",
                 })
             }
-            this.#transition(control, terminalState, null, errorRecord(cause))
-            return {runId: control.runId, status: terminalState, error: errorRecord(cause)}
+            this.#transition(control, terminalState, null, cause ? errorRecord(cause) : null)
+            await this.#cleanupWorkspace(control)
+            return {runId: control.runId, status: terminalState, error: cause ? errorRecord(cause) : null}
         }
         try {
-            if (run.state !== "restoring") this.#transition(control, "restoring", null, errorRecord(cause))
+            if (run.state !== "restoring") this.#transition(control, "restoring", null, cause ? errorRecord(cause) : null)
             for (const [classification, operation] of [
                 ["managed-clean", "experiment_restore"],
                 ["absent", "experiment_remove"],
@@ -961,12 +1046,13 @@ class OptimizationRunner {
                     .filter(([, initial]) => initial.classification === classification)
                     .map(([runtimeId]) => runtimeId)
                 if (!runtimeIds.length) continue
+                const priorEpoch = run.epochs.find((entry) => entry.number === control.currentCandidate.optimizationEpoch - 1)
                 await this.#experiment(
                     control,
                     operation,
                     control.currentCandidate,
                     control.currentCandidate.optimizationEpoch,
-                    control.previousCandidate,
+                    priorEpoch?.candidateArtifactId ? this.#readArtifact(priorEpoch.candidateArtifactId) : null,
                     runtimeIds,
                 )
             }
@@ -978,8 +1064,8 @@ class OptimizationRunner {
                 })
             }
             this.#transition(control, terminalState)
-            await this.workspaceManager.cleanup?.(control.runId)
-            return {runId: control.runId, status: terminalState, error: errorRecord(cause)}
+            await this.#cleanupWorkspace(control)
+            return {runId: control.runId, status: terminalState, error: cause ? errorRecord(cause) : null}
         } catch (recoveryError) {
             const recoveryJobs = Array.isArray(recoveryError.installationJobs)
                 ? recoveryError.installationJobs

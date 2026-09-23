@@ -12,8 +12,14 @@ it("documents DSH distribution and rejects unsafe package entries", async () => 
     assert.match(readme, /腾讯.*npm|Tencent.*npm/iu)
     assert.match(readme, /卸载|uninstall/iu)
     assert.match(readme, /保留.*数据|retains?.*data/iu)
-    assert.match(readme, /mkdir -p packages\/rolling-skill-dsh\/dist/u)
-    assert.match(rootReadme, /mkdir -p packages\/rolling-skill-dsh\/dist/u)
+    for (const documentation of [readme, rootReadme]) {
+        assert.match(documentation, /mkdirSync\('packages\/rolling-skill-dsh\/dist', \{ recursive: true \}\)/u)
+        assert.match(documentation, /npm ci --prefix desktop\/rolling-skill --ignore-scripts/u)
+        assert.match(documentation, /npm pack --workspace @rolling-skill\/dsh-plugin --pack-destination packages\/rolling-skill-dsh\/dist/u)
+        const version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version
+        assert.ok(documentation.includes(`rolling-skill-dsh-plugin-${version}.tgz`))
+        assert.doesNotMatch(documentation, /rolling-skill-dsh-plugin-0\.1\.0\.tgz/u)
+    }
 
     const scriptPath = join(packageRoot, "scripts", "inspect-package.mjs")
     assert.equal(existsSync(scriptPath), true)

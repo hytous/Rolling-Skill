@@ -111,6 +111,22 @@ function reportFixture() {
 }
 
 describe("Optimization Markdown report", () => {
+    it("reports the sampled parent, seed, fronts and the selected historical winner", () => {
+        const {run, artifacts} = reportFixture()
+        run.snapshot.search = require("../src/optimization/optimization-search.cjs").parseSearch({})
+        run.checkpoint.selection = {winnerId: "version-c1"}
+        artifacts["analysis-2"].search = {objectives: ["quality", "latency"], parentIds: ["version-c1"], winnerId: "version-c1",
+            rejectedIds: [], fronts: [["version-c1"], ["version-c2"]], diversityCoordinates: 3}
+        artifacts["analysis-2"].parentId = "released-v1"
+        artifacts["analysis-2"].feedbackArtifactId = "feedback-2"
+        artifacts["feedback-2"] = {feedback: {seed: "reproducible-seed", selectedKeys: ["case-1"]}}
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id]})
+        assert.match(markdown, /筛选胜出版本：version-c1/)
+        assert.match(markdown, /reproducible-seed/)
+        assert.match(markdown, /非支配层 2：version-c2/)
+        assert.match(markdown, /完整回归/)
+        assert.match(markdown, /控制器停止策略/)
+    })
     it("records the frozen v3 optimization direction and Playbook identity", () => {
         const {run, artifacts} = reportFixture()
         run.snapshot = {

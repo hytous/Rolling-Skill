@@ -646,6 +646,15 @@ const optimizationConfigV3Input = z.object({
     activationMode: z.enum(["automatic", "explicit"]),
     limits: compactOptimizationLimits,
     optimizationDirection: z.string().max(8_000).nullable(),
+    search: z.object({
+        candidatesPerRound: z.number().int().min(1).max(8).optional(),
+        parentLimit: z.number().int().min(1).max(4).optional(),
+        failureSamples: z.number().int().min(1).max(24).optional(),
+        successSamples: z.number().int().min(0).max(8).optional(),
+        feedbackCharacters: z.number().int().min(2000).max(18000).optional(),
+        caseWorkers: z.number().int().min(1).max(8).optional(),
+        seed: z.string().min(1).max(200).optional(),
+    }).strict().optional(),
 }).strict().superRefine((input, context) => {
     const runtimeIds = input.targets.map((target) => target.runtimeId)
     if (new Set(runtimeIds).size !== runtimeIds.length) {
@@ -759,6 +768,7 @@ const publicOptimizationCheckpoint = z.object({
     reportArtifactId: id.optional(),
     reportDigest: boundedText(80, "Optimization report digest").optional(),
     finalApprovalId: id.nullable().optional(),
+    selectedCandidateArtifactId: id.nullable().optional(),
     releaseApprovalId: id.nullable().optional(),
     installApprovalId: id.nullable().optional(),
     releasedVersionId: id.nullable().optional(),
@@ -805,6 +815,7 @@ const publicOptimizationRun = z.union([
     publicOptimizationRunBase.extend({
         limits: compactOptimizationLimits,
         optimizationDirection: z.string().max(8_000).nullable(),
+        search: optimizationConfigV3Input.shape.search,
         playbook: publicOptimizationPlaybook,
     }).strict(),
     publicOptimizationRunBase.extend({

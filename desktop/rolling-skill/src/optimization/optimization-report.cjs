@@ -20,6 +20,7 @@ function percent(value) {
 }
 
 function finalApprovalText(run) {
+    if (run.checkpoint?.selection?.winnerId === run.snapshot?.baseline?.versionId) return "保留基线，无需发布审批"
     if (run.error?.code === "OPTIMIZATION_FINAL_APPROVAL_REJECTED") return "已拒绝"
     const checkpoint = run.checkpoint ?? {}
     if (checkpoint.finalApprovalId) return `已通过（${checkpoint.finalApprovalId}）`
@@ -119,11 +120,26 @@ function renderEpoch(lines, epoch, read) {
     listSection(lines, "回归项", analysis.regressed)
     listSection(lines, "关键失败", analysis.criticalFailures)
     lines.push(
-        "#### Agent 判断理由",
+        analysis.search ? "#### 控制器停止策略" : "#### Agent 判断理由",
         "",
         `> ${display(decision.rationale, "未提供")}`,
         "",
     )
+    if (analysis.search) {
+        const request = readArtifact(read, analysis.feedbackArtifactId)
+        lines.push(
+            "#### 随机反馈与多候选筛选", "",
+            `- 逻辑父版本：${display(analysis.parentId)}`,
+            `- 反馈种子：${display(request?.feedback?.seed)}`,
+            `- 抽样 Case × Runtime：${(request?.feedback?.selectedKeys ?? []).join("；") || "未提供"}`,
+            `- 比较依据：完整回归；目标 ${analysis.search.objectives.join("、")}；共同有效评分维度 ${analysis.search.diversityCoordinates}`,
+            `- 下一组活跃父版本：${analysis.search.parentIds.join("、")}`,
+            `- 当前发布候选：${analysis.search.winnerId}`,
+            `- 不合格候选：${analysis.search.rejectedIds.join("、") || "无"}`, "",
+        )
+        analysis.search.fronts.forEach((front, index) => lines.push(`- 非支配层 ${index + 1}：${front.join("、")}`))
+        lines.push("")
+    }
 }
 
 function generateOptimizationReport({run, readArtifact: read}) {
@@ -169,6 +185,13 @@ function generateOptimizationReport({run, readArtifact: read}) {
     for (const target of snapshot.targets ?? []) {
         lines.push(`- ${display(target.runtimeId)}：模型 ${display(target.modelId)}；推理强度 ${display(target.effort, "Runtime 默认值")}`)
     }
+    if (snapshot.search) {
+        lines.push("", "## 随机反馈搜索配置", "",
+            `- 候选总预算：${snapshot.limits.maxEpochs}；每组总候选：${snapshot.search.candidatesPerRound}；活跃父版本上限：${snapshot.search.parentLimit}`,
+            `- 每候选反馈：最多 ${snapshot.search.failureSamples} 条失败、${snapshot.search.successSamples} 条通过；字符预算 ${snapshot.search.feedbackCharacters}`,
+            `- 每 Runtime 的 Case Worker：${snapshot.search.caseWorkers}；候选安装与评测串行`,
+            "- 缺失 Token 或耗时不会记为零；仅在全部合格版本都有数据时启用对应成本轴。", "")
+    }
     lines.push("", "## Epoch 结果", "")
     for (const epoch of run.epochs ?? []) renderEpoch(lines, epoch, read)
 
@@ -187,11 +210,13 @@ function generateOptimizationReport({run, readArtifact: read}) {
         `- 最终审批：${finalApprovalText(run)}`,
         `- Released version：${display(checkpoint.releasedVersionId, "未发布")}`,
         `- Released install Artifact：${display(checkpoint.releasedInstallArtifactId, "未提供")}`,
+        ...(checkpoint.selection ? [`- 筛选胜出版本：${checkpoint.selection.winnerId}（不一定是最后一个候选）`] : []),
         "",
         "## 恢复状态",
         "",
         `- Run 恢复状态：${display(run.state)}`,
     )
+    if (checkpoint.workspaceRetained) lines.push(`- Worktree 保留待处理：${display(checkpoint.workspaceCleanupError?.message)}`)
     if (checkpoint.finalRegressionPassed !== undefined || checkpoint.finalEvaluationArtifactId) {
         lines.splice(lines.indexOf("## 恢复状态"), 0,
             `- 历史最终回归：${checkpoint.finalRegressionPassed === true ? "通过" : checkpoint.finalRegressionPassed === false ? "未通过" : "状态未记录"}`,

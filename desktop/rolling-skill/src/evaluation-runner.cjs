@@ -7,9 +7,27 @@ const {
 const {buildEvidenceCatalog} = require("./evaluation-evidence-catalog.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const {resolveExecutedSkillEvidenceBinding} = require("./evaluation-skill-binding.cjs")
+const {mkdirSync, lstatSync, realpathSync} = require("node:fs")
+const {join} = require("node:path")
+const {createHash} = require("node:crypto")
 
 const SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot"
 const CANCELLATION_ERROR = "Evaluation cancelled by user"
+
+function concurrentCaseWorkspace(root, runId, resultId) {
+    const hash = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 24)
+    let workspace = realpathSync(root)
+    for (const segment of [".rolling-skill-evaluations", hash(runId), hash(resultId)]) {
+        workspace = join(workspace, segment)
+        try { mkdirSync(workspace, {mode: 0o700}) }
+        catch (error) { if (error.code !== "EEXIST") throw error }
+        const status = lstatSync(workspace)
+        if (status.isSymbolicLink() || !status.isDirectory() || realpathSync(workspace) !== workspace) {
+            throw new Error("Concurrent Case workspace must be a regular directory inside the evaluation workspace")
+        }
+    }
+    return workspace
+}
 
 class AsyncTaskQueue {
     constructor() {
@@ -150,9 +168,12 @@ class EvaluationRunner {
         }
     }
 
-    run(run) {
+    run(run, options = {}) {
         if (this.running.has(run.id)) return this.running.get(run.id)
+        const caseWorkers = options.caseWorkers ?? 1
+        if (!Number.isSafeInteger(caseWorkers) || caseWorkers < 1 || caseWorkers > 8) throw new Error("Case workers must be between 1 and 8")
         const control = {
+            caseWorkers,
             cancelRequested: false,
             clients: new Set(),
             executionStates: new Map(
@@ -192,16 +213,22 @@ class EvaluationRunner {
         this.store.updateEvaluationRun(run.id, {status: "running", startedAt})
         this.onChanged({runId: run.id, status: "running"})
         const gradingOperation = this.runGradingQueue(run, control.gradingQueue, control)
-        const queues = run.runtimeConfigurations.map((configuration) =>
-            this.runRuntimeQueue(run, configuration, control),
-        )
+        const queues = run.runtimeConfigurations.flatMap((configuration) => {
+            const results = run.results.filter((r) => (r.runtimeId ?? r.runtimeConfiguration?.runtimeId) === configuration.runtimeId)
+            const count = Math.min(control.caseWorkers, Math.max(1, results.length))
+            return Array.from({length: count}, (_, worker) => this.runRuntimeQueue(run, configuration, control,
+                results.filter((_, index) => index % count === worker)))
+        })
         let settled
         try {
-            settled = await Promise.all(queues)
+            const outcomes = await Promise.allSettled(queues)
+            const rejected = outcomes.find((entry) => entry.status === "rejected")
+            if (rejected) throw rejected.reason
+            settled = outcomes.map((entry) => entry.value)
         } finally {
             control.gradingQueue.close()
+            await gradingOperation
         }
-        await gradingOperation
         const completedCount = settled.reduce((sum, entry) => sum + entry.completed, 0)
         const failedCount = settled.reduce((sum, entry) => sum + entry.failed, 0)
 
@@ -227,8 +254,8 @@ class EvaluationRunner {
         return {id: run.id, status, startedAt, completedAt, completedCount, failedCount}
     }
 
-    async runRuntimeQueue(run, configuration, control) {
-        const results = run.results.filter(
+    async runRuntimeQueue(run, configuration, control, assigned = null) {
+        const results = assigned ?? run.results.filter(
             (entry) =>
                 (entry.runtimeId ?? entry.runtimeConfiguration?.runtimeId) ===
                 configuration.runtimeId,
@@ -261,6 +288,11 @@ class EvaluationRunner {
                 control.executionStates.set(result.id, "running")
                 this.onChanged({runId: run.id, resultId: result.id, status: "running"})
                 try {
+                    if (control.caseWorkers > 1) {
+                        if (typeof client.setWorkspace !== "function") throw new Error("This Runtime cannot isolate concurrent Case workspaces")
+                        const workspace = concurrentCaseWorkspace(this.workspaceRoot, run.id, result.id)
+                        await client.setWorkspace(workspace)
+                    }
                     const targetSkillReference = configuration.skillReference ?? run.skillReference
                     this.assertSkillSnapshotUnchanged(run)
                     const output = await client.runEvaluationCase({

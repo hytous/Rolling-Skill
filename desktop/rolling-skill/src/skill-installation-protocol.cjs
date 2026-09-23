@@ -223,7 +223,8 @@ function freezeSkillExperimentRequest(input = {}) {
             throw new Error("A later Optimization Epoch requires the previous Candidate")
         }
         if (
-            input.previousCandidate.state !== "candidate" ||
+            !(input.previousCandidate.state === "candidate" ||
+                (EXPERIMENT_RECOVERY_OPERATIONS.has(operation) && input.previousCandidate.state === "released")) ||
             input.previousCandidate.createdBy !== "optimization" ||
             input.previousCandidate.optimizationRunId !== runId ||
             input.previousCandidate.optimizationEpoch !== epoch - 1

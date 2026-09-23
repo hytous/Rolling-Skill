@@ -711,7 +711,7 @@ function createOperatorRuntime({
             runtimeConfigurations,
         }, {optimizationAuthorized: true})
         optimizationStore.updateCheckpoint(input.optimizationRun.id, {activeEvaluationRunId: run.id, activeEvaluationKind: input.kind})
-        const evaluationOperation = evaluationRunner.run(run)
+        const evaluationOperation = evaluationRunner.run(run, {caseWorkers: snapshot.search?.caseWorkers ?? 1})
         if (context.cancelRequested?.()) await evaluationRunner.cancel(run.id)
         await evaluationOperation
         return store.getEvaluationRun(run.id)

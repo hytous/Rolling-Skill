@@ -232,6 +232,9 @@
             activationMode,
             optimizationDirection: direction || null,
             limits: {maxEpochs},
+            ...(values.search ? {search: Object.fromEntries(Object.entries(values.search).map(([key, value]) => [key,
+                requiredOptimizationNumber(value, `Search ${key}`, {integer: true, minimum: 1, maximum: key === "failureSamples" ? 24 : 8}),
+            ]))} : {}),
         }
     }
 
@@ -510,7 +513,9 @@
 
     function optimizationFinalApprovalView(run = {}, approval = null) {
         const epochs = Array.isArray(run.epochs) ? run.epochs : []
-        const epoch = epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? {}
+        const selected = run.checkpoint?.selectedCandidateArtifactId
+        const epoch = (selected ? epochs.find((entry) => entry.candidateArtifactId === selected) : null) ??
+            epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? {}
         const analysis = epoch.analysis ?? {}
         return {
             approvalId: approval?.id ?? run.checkpoint?.finalApprovalId ?? null,
@@ -2651,6 +2656,11 @@
                 },
                 activationMode: selectors.optimizationActivation.value,
                 optimizationDirection: objective.value.trim() || null,
+                ...(selectors.setup.querySelector("[data-optimization-search]")?.checked ? {search: {
+                    candidatesPerRound: Number(selectors.setup.querySelector("[data-search-candidates]")?.value ?? 3),
+                    failureSamples: Number(selectors.setup.querySelector("[data-search-samples]")?.value ?? 6),
+                    caseWorkers: Number(selectors.setup.querySelector("[data-search-workers]")?.value ?? 1),
+                }} : {}),
                 limits,
             }
         }

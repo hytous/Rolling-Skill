@@ -21,19 +21,19 @@ dsh plugin --profile web add @rolling-skill/dsh-plugin
 从本地或下载好的 `.tgz` 安装：
 
 ```bash
-dsh plugin --profile web add ./rolling-skill-dsh-plugin-0.1.0.tgz
+dsh plugin --profile web add ./rolling-skill-dsh-plugin-0.1.70.tgz
 ```
 
 通过 HTTPS 分发时，先下载再安装同一个 npm 兼容包：
 
 ```bash
-curl -fL -o rolling-skill-dsh-plugin-0.1.0.tgz https://example.com/rolling-skill-dsh-plugin-0.1.0.tgz
-dsh plugin --profile web add ./rolling-skill-dsh-plugin-0.1.0.tgz
+curl -fL -o rolling-skill-dsh-plugin-0.1.70.tgz https://example.com/rolling-skill-dsh-plugin-0.1.70.tgz
+dsh plugin --profile web add ./rolling-skill-dsh-plugin-0.1.70.tgz
 ```
 
 腾讯 npm 软件源也可以托管此包。发布到实际的软件源后，为 `@rolling-skill` scope 配置企业提供的 registry，再使用相同的 `dsh plugin --profile web add @rolling-skill/dsh-plugin` 命令安装。软件源地址和登录方式以所属腾讯 npm 服务的配置为准。
 
-更新时重新执行对应的 `add` 命令即可。启动 Harness：
+以上文件名以仓库包版本 `0.1.70` 为例，安装其他版本时请替换为实际文件名；`example.com` 仅是分发地址占位符。更新时重新执行对应的 `add` 命令即可。启动 Harness：
 
 ```bash
 dsh web --no-open
@@ -86,9 +86,13 @@ dsh plugin --profile web remove @rolling-skill/dsh-plugin
 ## 开发打包
 
 ```bash
-npm install
-npm run build --workspace @rolling-skill/dsh-plugin
-mkdir -p packages/rolling-skill-dsh/dist
+npm ci --ignore-scripts
+npm ci --prefix desktop/rolling-skill --ignore-scripts
+node -e "require('node:fs').mkdirSync('packages/rolling-skill-dsh/dist', { recursive: true })"
 npm pack --workspace @rolling-skill/dsh-plugin --pack-destination packages/rolling-skill-dsh/dist
-node packages/rolling-skill-dsh/scripts/inspect-package.mjs packages/rolling-skill-dsh/dist/rolling-skill-dsh-plugin-0.1.0.tgz
+node packages/rolling-skill-dsh/scripts/inspect-package.mjs packages/rolling-skill-dsh/dist/rolling-skill-dsh-plugin-0.1.70.tgz
 ```
+
+`npm pack` 会通过 `prepack` 自动构建。共享 Core 仍依赖 `desktop/rolling-skill` 的模块，安装该目录依赖时使用 `--ignore-scripts`，不下载或启动 Electron。
+
+多 Worker 回归、随机反馈和候选筛选的配置见[多候选搜索指南](../../docs/sampled-candidate-search.md)。

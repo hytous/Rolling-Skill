@@ -424,6 +424,11 @@
                                         <input type="number" min="1" step="1" value="5" data-optimization-limit="maxEpochs" required />
                                     </label>
                                     <p class="operator-help" data-i18n="operatorEpochBoundaryHelp">One Epoch includes improving the Skill, installing the Candidate, running the complete evaluation, and reviewing the result. Agent operations inside the Epoch are unlimited.</p>
+                                    <label class="operator-check"><input type="checkbox" data-optimization-search />随机反馈多候选搜索 / Sampled candidate search</label>
+                                    <label class="operator-field">每组候选数 / Candidates per round<input type="number" min="1" max="8" value="3" data-search-candidates /></label>
+                                    <label class="operator-field">每候选失败样本数 / Failure samples<input type="number" min="1" max="24" value="6" data-search-samples /></label>
+                                    <label class="operator-field">每 Runtime 并发 Case 数 / Case workers<input type="number" min="1" max="8" value="1" data-search-workers /></label>
+                                    <p class="operator-help">最大 Epoch 是候选总预算，不乘以每组候选数。并发默认关闭；启用前需确认业务数据可隔离、Skill 可从 Case 子目录自动发现。</p>
                                 </fieldset>
                             </section>
                             <details id="operator-automation-boundary" class="operator-setup-details">

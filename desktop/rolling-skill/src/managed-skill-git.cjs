@@ -299,7 +299,13 @@ class ManagedSkillGit {
         const registered = listed.stdout
             .split("\0\0")
             .flatMap((record) => record.split("\0"))
-            .some((field) => field === `worktree ${workspacePath}`)
+            .some((field) => {
+                if (!field.startsWith("worktree ")) return false
+                // Git emits forward slashes on Windows; compare real filesystem
+                // identities, not the platform-dependent printed spelling.
+                try { return realpathSync.native(field.slice("worktree ".length)) === realpathSync.native(workspacePath) }
+                catch { return false }
+            })
         if (!registered) throw new Error("Optimization path is not a registered Git worktree")
         await this.run(["worktree", "remove", "--force", "--", workspacePath], {
             cwd: repositoryPath,

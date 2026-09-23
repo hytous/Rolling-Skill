@@ -83,6 +83,29 @@ async function fixture() {
 }
 
 describe("OptimizationWorkspaceManager", () => {
+    it("restores a historical parent only in the run worktree and retains every candidate commit", async () => {
+        const {git, run, store, workspaces} = await fixture()
+        const workspace = await workspaces.create(run)
+        const path = join(workspace.workspacePath, "SKILL.md")
+        write(path, manifest("First candidate"))
+        const first = await workspaces.createCandidate({runId: run.id, epoch: 1, message: "first"})
+        const baseline = {...run.snapshot.baseline, id: run.snapshot.baseline.versionId}
+        await workspaces.prepareParent(run.id, baseline)
+        assert.equal(readFileSync(path, "utf8"), manifest("Baseline"))
+        assert.equal(await git.worktreeHead(workspace.workspacePath), first.commit)
+        // Preparing an older parent is a staged change, not permission to discard it.
+        await assert.rejects(() => workspaces.cleanup(run.id), /uncommitted/)
+        await assert.rejects(() => workspaces.prepareParent(run.id, first), /uncommitted/)
+        write(path, manifest("Second independent candidate"))
+        const second = await workspaces.createCandidate({runId: run.id, epoch: 2, message: "second"})
+        assert.equal(await git.defaultBranch(workspace.workspacePath), workspace.branchName)
+        const repository = store.getRepository(run.snapshot.baseline.repositoryId)
+        await workspaces.cleanup(run.id)
+        assert.equal(existsSync(workspace.workspacePath), false)
+        assert.equal(await git.isAncestor(repository.managedPath, first.commit, second.commit), true)
+        assert.equal(await git.head(repository.managedPath), run.snapshot.baseline.commit)
+        assert.equal(store.getVersion(first.id).commit, first.commit)
+    })
     it("rejects an optimization workspace root redirected outside Application Support", () => {
         const applicationSupportDirectory = temporaryDirectory()
         const outside = temporaryDirectory("rolling-skill-optimization-root-outside-")

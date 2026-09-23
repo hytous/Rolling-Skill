@@ -321,6 +321,7 @@ test("direction, model, effort and maximum Epoch are submitted as visible v3 con
     assert.equal(input.operator.effort, "max")
     assert.equal(input.optimizationDirection, "重点改善异常下钻")
     assert.deepEqual(input.limits, {maxEpochs: 5})
+    assert.equal(Object.hasOwn(input, "search"), false, "candidate search must remain absent unless explicitly enabled")
     await act(async () => fieldFor("optimizationMaxEpochs", "input").props.onChange({target: {value: ""}}))
     assert.equal(view.button("startOptimization").props.disabled, true)
 })
@@ -335,4 +336,36 @@ test("optimization detail shows its frozen direction and Playbook identity", asy
     assert.match(content, /optimizationSystemDirection/u)
     assert.match(content, /Rolling Skill Optimization Playbook v1/u)
     assert.match(content, /sha256:1234567890a/u)
+})
+
+test("sampled search is opt-in and submits validated candidate and worker limits", async (t) => {
+    const view = await fixture(t)
+    const field = (label) => view.renderer.root.findAllByType("label").find((entry) =>
+        entry.findAllByType("span")[0]?.props.children === label).findByType("input")
+    assert.equal(field("optimizationSampledSearch").props.checked, false)
+    await act(async () => field("optimizationSampledSearch").props.onChange({target: {checked: true}}))
+    await act(async () => field("optimizationCaseWorkers").props.onChange({target: {value: "3"}}))
+    await view.click("startOptimization")
+    const input = view.requests.findLast((entry) => entry.method === "optimizations.start").input
+    assert.deepEqual(input.search, {candidatesPerRound: 3, failureSamples: 6, caseWorkers: 3})
+    assert.deepEqual(input.limits, {maxEpochs: 3})
+    await act(async () => field("optimizationCaseWorkers").props.onChange({target: {value: "9"}}))
+    assert.equal(view.button("startOptimization").props.disabled, true)
+})
+
+test("final approval displays the selected historical candidate rather than the latest epoch", async (t) => {
+    const view = await fixture(t, {runState: "waiting_approval",
+        checkpoint: {operatorSessionId: "operator-session-1", selectedCandidateArtifactId: "first-candidate"},
+        runDetail: {currentEpoch: 2, epochs: [
+            {number: 1, status: "completed", candidateArtifactId: "first-candidate", candidate: {versionId: "historical-winner"}, analysis: {score: 95, passRate: 1}},
+            {number: 2, status: "deciding", candidateArtifactId: "last-candidate", candidate: {versionId: "latest-loser"}, analysis: {score: 80, passRate: 0.8}},
+        ]},
+        finalApproval: {id: "final-approval-1", jobId: "operator-job-1", status: "pending", action: "optimization.release-install", risk: "release"},
+    })
+    await view.click("details")
+    const panel = view.renderer.root.findAllByProps({className: "rolling-skill-subpanel"}).find((node) =>
+        node.findAllByType("button").some((button) => button.props.children === "optimizationInstallImproved"))
+    assert.ok(panel)
+    assert.match(renderedText(panel), /historical-winner/)
+    assert.doesNotMatch(renderedText(panel), /latest-loser/)
 })

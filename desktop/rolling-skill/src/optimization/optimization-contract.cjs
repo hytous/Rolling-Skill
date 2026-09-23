@@ -3,6 +3,7 @@ const {isAbsolute} = require("node:path")
 
 const {validateSkillEvidence} = require("../evaluation-skill-evidence.cjs")
 const {validateOptimizationPlaybook} = require("./optimization-playbook.cjs")
+const {parseSearch} = require("./optimization-search.cjs")
 
 const LEGACY_OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v1"
 const COMPACT_OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v2"
@@ -276,7 +277,7 @@ function parseOptimizationConfig(value) {
             "target",
             "telemetry",
         ] : v3 ? [...compactFields, "optimizationDirection"] : compactFields,
-        [],
+        v3 ? ["search"] : [],
         "Optimization config",
     )
     const activationMode = requiredText(source.activationMode, "Optimization activation mode", 20)
@@ -310,6 +311,7 @@ function parseOptimizationConfig(value) {
         activationMode,
         limits: legacy ? legacyLimits(source.limits) : compactLimits(source.limits),
         ...(v3 ? {optimizationDirection: optimizationDirection(source.optimizationDirection)} : {}),
+        ...(v3 && source.search !== undefined ? {search: parseSearch(source.search)} : {}),
         ...(legacy ? {
             mode: requiredText(source.mode, "Optimization mode", 20),
             target: target(source.target),
@@ -567,6 +569,7 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
         ...(v3 ? {
             optimizationDirection: config.optimizationDirection,
             playbook: validateOptimizationPlaybook(value.playbook),
+            ...(config.search ? {search: cloneJson(config.search)} : {}),
         } : {}),
         ...(legacy ? {
             mode: config.mode,
@@ -653,7 +656,7 @@ function validateFrozenOptimizationRun(value) {
             "createdAt",
             "digest",
         ],
-        [],
+        v3 ? ["search"] : [],
         "Frozen optimization run",
     )
     const body = frozenRunBody({
@@ -671,6 +674,7 @@ function validateFrozenOptimizationRun(value) {
             activationMode: source.activationMode,
             limits: source.limits,
             ...(v3 ? {optimizationDirection: source.optimizationDirection} : {}),
+            ...(v3 && source.search !== undefined ? {search: source.search} : {}),
             ...(legacy ? {
                 mode: source.mode,
                 target: source.target,

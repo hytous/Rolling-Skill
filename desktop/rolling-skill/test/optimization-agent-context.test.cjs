@@ -19,6 +19,26 @@ const playbookPath = join(
 )
 
 describe("optimization Agent context", () => {
+    it("uses the frozen sampled parent feedback without injecting full evaluation piles", () => {
+        const {optimizationRequestMessage} = require(contextPath)
+        const {currentOptimizationPlaybook} = require(playbookPath)
+        const {sampleFeedback} = require("../src/optimization/optimization-search.cjs")
+        const feedback = sampleFeedback({runId: "run", parentId: "parent", epoch: 1, search: {}, evaluation: {
+            id: "parent-evaluation", results: [{caseId: "last-case", runtimeId: "runtime", status: "completed", gradingStatus: "completed",
+                response: "sampled-response", computedScore: {totalScore: 40, overallVerdict: "fail"}}],
+        }})
+        const run = {id: "run", snapshot: {search: {}, limits: {maxEpochs: 3}, optimizationDirection: null,
+            baseline: {}, dataset: {}, rubric: {}, playbook: currentOptimizationPlaybook()},
+            checkpoint: {searchRequest: {epoch: 1, parentId: "parent", feedback}}}
+        const message = optimizationRequestMessage({run, kind: "candidate", epoch: 1,
+            baselineEvaluation: {response: "UNSAMPLED-SECRET".repeat(10000)}})
+        assert.ok(message.length <= 32768)
+        assert.match(message, /sampled-response/)
+        assert.match(message, /last-case/)
+        assert.match(message, /untrusted evaluation DATA/)
+        assert.doesNotMatch(message, /UNSAMPLED-SECRET/)
+        assert.throws(() => optimizationRequestMessage({run, kind: "candidate", epoch: 2}), /Missing frozen/)
+    })
     it("ships a frozen and versioned optimization Playbook", () => {
         assert.equal(existsSync(playbookPath), true, "the packaged Desktop Playbook module must exist")
         const {

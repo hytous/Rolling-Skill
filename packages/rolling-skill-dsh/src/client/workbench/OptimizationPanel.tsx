@@ -27,6 +27,7 @@ interface OperatorSummary {jobs: OperatorJob[]; approvals: OperatorApproval[]}
 interface OptimizationEpoch {
     number: number
     status: string
+    candidateArtifactId?: string | null
     candidate?: {versionId?: string; commit?: string; contentDigest?: string}
     installations?: Array<{runtimeId?: string; status?: string; installationJobId?: string}>
     analysis?: {score?: number; scoreDelta?: number; passRate?: number; regressionCount?: number; executionFailureCount?: number; gradingFailureCount?: number}
@@ -42,7 +43,7 @@ interface OptimizationDetail extends OptimizationRun {
     operator?: unknown
     targets?: Array<{runtimeId?: string}>
     judge?: unknown
-    checkpoint?: {operatorSessionId?: string; activeEvaluationRunId?: string; installationOperation?: string; installationPending?: boolean; installationJobIds?: string[]}
+    checkpoint?: {operatorSessionId?: string; activeEvaluationRunId?: string; installationOperation?: string; installationPending?: boolean; installationJobIds?: string[]; selectedCandidateArtifactId?: string | null}
     epochs?: OptimizationEpoch[]
 }
 interface OptimizationReport {artifactId: string | null; digest: string; mediaType: string; preview?: string}
@@ -210,8 +211,10 @@ export function OptimizationPanel({t, initialRunId, onNavigate}: {t: Translate; 
     }, [operatorSummary, runDetail?.checkpoint?.operatorSessionId])
     const finalApprovalEpoch = useMemo(() => {
         const epochs = runDetail?.epochs ?? []
+        const selected = runDetail?.checkpoint?.selectedCandidateArtifactId
+        if (selected) return epochs.find((epoch) => epoch.candidateArtifactId === selected) ?? null
         return epochs.find((epoch) => epoch.number === runDetail?.currentEpoch) ?? epochs.at(-1) ?? null
-    }, [runDetail?.currentEpoch, runDetail?.epochs])
+    }, [runDetail?.currentEpoch, runDetail?.epochs, runDetail?.checkpoint?.selectedCandidateArtifactId])
     const resolveFinalApproval = async (decision: "approve" | "reject") => {
         if (!runDetail || !finalApproval) return
         const job = operatorSummary.jobs.find((item) => item.id === finalApproval.jobId)

@@ -10,6 +10,7 @@ const {OptimizationRunner} = require("../src/optimization/optimization-runner.cj
 const {OptimizationOperatorGateway} = require("../src/optimization/optimization-operator-gateway.cjs")
 const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
+const {parseSearch} = require("../src/optimization/optimization-search.cjs")
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -333,6 +334,102 @@ async function waitForPending(gateway, runId, kind) {
     }
     assert.fail(`Optimization Run did not request ${kind}`)
 }
+
+function searchFixture(scores, search = {}) {
+    const fixture = runnerFixture()
+    fixture.store.run.snapshot.search = parseSearch(search)
+    fixture.store.run.snapshot.limits.maxEpochs = scores.length - 1
+    fixture.parents = []
+    fixture.workspaceManager.prepareParent = async (_id, parent) => fixture.parents.push(parent.id)
+    fixture.evaluationManager.run = async (input) => {
+        fixture.evaluationCalls.push(structuredClone(input))
+        return evaluation(`evaluation-${fixture.evaluationCalls.length}`, scores[fixture.evaluationCalls.length - 1])
+    }
+    fixture.execute = () => fixture.runner.run(fixture.run.id, {
+        operatorSessionId: "operator-session-1", parentJobId: "operator-job-1",
+    })
+    return fixture
+}
+
+describe("sampled multi-candidate OptimizationRunner", () => {
+    it("does not create another candidate when resuming after the final evaluated epoch", async () => {
+        const fixture = searchFixture([70, 95])
+        const evaluate = fixture.evaluationManager.run
+        fixture.evaluationManager.run = async (input) => {
+            const result = await evaluate(input)
+            if (input.kind === "candidate") fixture.runner.pause(fixture.run.id)
+            return result
+        }
+        assert.equal((await fixture.execute()).status, "paused")
+        const outcome = await fixture.runner.resume(fixture.run.id, {
+            operatorSessionId: "operator-session-2", parentJobId: "operator-job-2",
+        })
+        assert.equal(outcome.status, "succeeded", JSON.stringify(outcome))
+        assert.equal(fixture.operatorGateway.candidateRequests, 1)
+        assert.equal(fixture.evaluationCalls.length, 2)
+    })
+
+    it("retains dirty workspaces without turning an approved release into a rollback", async () => {
+        const fixture = searchFixture([70, 95])
+        fixture.workspaceManager.cleanup = async () => {throw new Error("uncommitted changes; retained")}
+        assert.equal((await fixture.execute()).status, "succeeded")
+        assert.equal(fixture.store.run.checkpoint.workspaceRetained, true)
+        assert.equal(fixture.installationCalls.some((call) => call.operation === "experiment_restore"), false)
+    })
+    it("evaluates every candidate on the full set and releases an earlier winner, not the last candidate", async () => {
+        const fixture = searchFixture([70, 95, 80, 75])
+        const outcome = await fixture.execute()
+        assert.equal(outcome.status, "succeeded", JSON.stringify(outcome))
+        assert.deepEqual(fixture.parents, Array(3).fill("released-baseline"))
+        assert.equal(fixture.operatorGateway.decisionRequests, 0)
+        assert.equal(fixture.evaluationCalls.length, 4)
+        assert.ok(fixture.evaluationCalls.every((call) => call.optimizationRun.snapshot.dataset.caseRevisions.length === 2))
+        assert.equal(fixture.releaseCalls[0].candidate.id, "candidate-1")
+        assert.equal(fixture.approvalCalls[0].candidate.id, "candidate-1")
+        assert.deepEqual(fixture.installationCalls.filter((call) => call.operation === "experiment_install").map((call) => call.candidateVersionId), ["candidate-1", "candidate-2", "candidate-3"])
+        const samples = fixture.artifacts.filter((a) => a.kind === "optimization-feedback").map((a) => JSON.parse(a.body))
+        assert.equal(samples.length, 3)
+        assert.equal(new Set(samples.map((s) => s.feedback.seed)).size, 3)
+        assert.ok(samples.every((s) => s.feedback.selectedKeys.length === 2))
+        assert.equal(fixture.store.run.checkpoint.selection.winnerId, "candidate-1")
+    })
+
+    it("starts the next group from selected historical parents and keeps the total candidate budget", async () => {
+        const fixture = searchFixture([70, 95, 80, 75, 96, 85, 81])
+        assert.equal((await fixture.execute()).status, "succeeded")
+        assert.deepEqual(fixture.parents, ["released-baseline", "released-baseline", "released-baseline", "candidate-1", "candidate-2", "candidate-1"])
+        assert.equal(fixture.operatorGateway.candidateRequests, 6)
+        assert.equal(fixture.evaluationCalls.length, 7)
+        assert.equal(fixture.releaseCalls[0].candidate.id, "candidate-4")
+    })
+
+    it("restores the baseline successfully when no candidate improves it", async () => {
+        const fixture = searchFixture([90, 80, 85, 90])
+        const outcome = await fixture.execute()
+        assert.equal(outcome.status, "succeeded", JSON.stringify(outcome))
+        assert.equal(outcome.error, null)
+        assert.equal(fixture.store.run.error, null)
+        assert.equal(fixture.store.run.checkpoint.selection.winnerId, "released-baseline")
+        assert.equal(fixture.approvalCalls.length, 0)
+        assert.equal(fixture.releaseCalls.length, 0)
+        assert.equal(fixture.installationCalls.at(-1).operation, "experiment_restore")
+    })
+
+    it("preserves the chosen winner when a final approval is resumed", async () => {
+        const fixture = searchFixture([70, 95, 80, 75])
+        fixture.approvals.request = async () => {
+            fixture.runner.pause(fixture.run.id)
+            return {approved: true, approvalId: "pending"}
+        }
+        assert.equal((await fixture.execute()).status, "paused")
+        fixture.approvals.request = async () => ({approved: true, approvalId: "confirmed"})
+        const outcome = await fixture.runner.resumeFinalApproval(fixture.run.id, {
+            operatorSessionId: "operator-session-2", parentJobId: "operator-job-2",
+        })
+        assert.equal(outcome.status, "succeeded", JSON.stringify(outcome))
+        assert.equal(fixture.releaseCalls[0].candidate.id, "candidate-1")
+    })
+})
 
 describe("multi-Epoch OptimizationRunner", () => {
     it("cancels an active baseline evaluation and waits for a terminal Run", async (t) => {

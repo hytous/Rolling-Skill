@@ -2076,6 +2076,12 @@ describe("multi-Epoch Optimization workbench", () => {
     })
 
     it("presents the Candidate, evaluation, target Runtimes, and risk beside the final decision", () => {
+        const historical = optimizationFinalApprovalView({currentEpoch: 2, checkpoint: {selectedCandidateArtifactId: "first"}, epochs: [
+            {number: 1, candidateArtifactId: "first", candidate: {versionId: "winner"}, analysis: {score: 95}},
+            {number: 2, candidateArtifactId: "last", candidate: {versionId: "last"}, analysis: {score: 70}},
+        ]})
+        assert.equal(historical.candidateVersionId, "winner")
+        assert.equal(historical.score, 95)
         const view = optimizationFinalApprovalView({
             currentEpoch: 2,
             targets: [
