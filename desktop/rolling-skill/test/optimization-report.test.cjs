@@ -111,6 +111,15 @@ function reportFixture() {
 }
 
 describe("Optimization Markdown report", () => {
+    it("includes the version-bound short summary and logical parent", () => {
+        const {run, artifacts} = reportFixture()
+        artifacts["candidate-2"].changeSummary = "先过滤再下钻，减少无关查询。"
+        artifacts["candidate-2"].parentVersionId = "released-v1"
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id]})
+        assert.match(markdown, /先过滤再下钻，减少无关查询。/)
+        assert.match(markdown, /逻辑父版本：released-v1/)
+    })
+
     it("reports the sampled parent, seed, fronts and the selected historical winner", () => {
         const {run, artifacts} = reportFixture()
         run.snapshot.search = require("../src/optimization/optimization-search.cjs").parseSearch({})

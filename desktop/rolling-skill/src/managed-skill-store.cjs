@@ -13,6 +13,7 @@ const {
     writeFileSync,
 } = require("node:fs")
 const {dirname, isAbsolute, posix, resolve} = require("node:path")
+const {compactChangeSummary, MAX_CHANGE_SUMMARY} = require("./managed-skill-memory.cjs")
 const {
     decodeSkillVersionCursor,
     encodeSkillVersionCursor,
@@ -187,6 +188,11 @@ function validateState(state) {
         if (!VERSION_STATES.has(versionState)) throw new Error("Managed Skill version state is invalid")
         const label = validateNullableText(version.versionLabel, "Version label", 64)
         validateNullableText(version.title, "Version title", 80)
+        const summary = validateNullableText(version.changeSummary, "Version change summary", MAX_CHANGE_SUMMARY)
+        if (summary !== null && compactChangeSummary(summary) !== version.changeSummary) {
+            throw new Error("Version change summary must be a compact single line")
+        }
+        validateNullableText(version.parentVersionId, "Parent version", 200)
         if (versionState === "released" && !label) throw new Error("Released version requires a label")
         if (label) {
             const labelKey = `${skillId}\0${label}`
@@ -215,6 +221,23 @@ function validateState(state) {
         requiredString(version.createdAt, "Version creation time", 100)
         validateNullableText(version.releasedAt, "Version release time", 100)
         validateNullableText(version.deprecatedAt, "Version deprecation time", 100)
+    }
+    const versionsById = new Map(state.versions.map((v) => [v.id, v]))
+    const checked = new Set()
+    for (const version of state.versions) {
+        const path = new Set()
+        let current = version
+        while (current && !checked.has(current.id)) {
+            if (path.has(current.id)) throw new Error("Version parent history contains a cycle")
+            path.add(current.id)
+            const parent = versionsById.get(current.parentVersionId)
+            if (current.parentVersionId && (!parent || parent.skillId !== current.skillId ||
+                parent.repositoryId !== current.repositoryId)) {
+                throw new Error("Parent version must belong to the same managed Skill")
+            }
+            current = parent
+        }
+        for (const id of path) checked.add(id)
     }
     return state
 }
@@ -540,6 +563,13 @@ class ManagedSkillStore {
         if (skill.repositoryId !== repository.id) {
             throw new Error("Managed Skill version repository does not match its Skill")
         }
+        const parentVersionId = validateNullableText(input.parentVersionId, "Parent version", 200)
+        if (parentVersionId !== null) {
+            const parent = this.getVersion(parentVersionId)
+            if (parent.skillId !== skill.id || parent.repositoryId !== repository.id) {
+                throw new Error("Parent version must belong to the same managed Skill")
+            }
+        }
         const commit = requiredString(input.commit, "Version commit", 40)
         if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error("Version commit must be a full SHA-1")
         const contentDigest = requiredString(input.contentDigest, "Version content digest", 80)
@@ -581,6 +611,8 @@ class ManagedSkillStore {
             state,
             versionLabel: null,
             title: validateNullableText(input.title, "Version title", 80),
+            changeSummary: compactChangeSummary(input.changeSummary ?? input.title),
+            parentVersionId,
             createdBy,
             optimizationRoundId: input.optimizationRoundId
                 ? requiredString(input.optimizationRoundId, "Optimization round", 200)

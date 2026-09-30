@@ -224,6 +224,8 @@ describe("managed Skill repository manager", () => {
         assert.notEqual(candidate.commit, imported.versions[0].commit)
         assert.equal(candidate.createdBy, "user")
         assert.equal(candidate.title, "明确账单查询流程")
+        assert.equal(candidate.changeSummary, "Clarify billing workflow")
+        assert.equal(candidate.parentVersionId, imported.versions[0].id)
         assert.equal(store.listVersions(skill.id).length, 2)
         await assert.rejects(
             () => manager.createCandidate({skillId: skill.id, message: "No changes"}),
@@ -256,6 +258,8 @@ describe("managed Skill repository manager", () => {
             message: "Recover second",
         })
         assert.equal(recovered.commit, await git.head(imported.repository.managedPath))
+        assert.equal(recovered.changeSummary, "Second", "recovery retains the actual committed summary")
+        assert.equal(recovered.parentVersionId, imported.versions[0].id)
         assert.equal(store.listVersions(imported.skills[0].id).length, 2)
     })
 
@@ -365,6 +369,7 @@ describe("managed Skill repository manager", () => {
         assert.equal(result.version.versionLabel, "1.0.1")
         assert.equal(result.version.state, "released")
         assert.equal(result.version.createdBy, "user")
+        assert.equal(result.version.changeSummary, "Agent edit")
         assert.match(
             readFileSync(join(imported.repository.managedPath, skillOne.skillRoot, "SKILL.md"), "utf8"),
             /Agent improved/u,

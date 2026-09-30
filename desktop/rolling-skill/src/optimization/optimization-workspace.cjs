@@ -281,12 +281,13 @@ class OptimizationWorkspaceManager {
             })
             const snapshot = snapshotManagedSkill(join(record.workspacePath, record.skillRoot), this.scanLimits)
             if (snapshot.digest !== stored.contentDigest) throw new Error("Prepared parent content digest mismatch")
+            record.parentVersionId = stored.id
             return workspaceCopy(record)
         })
     }
 
     async #createCandidate(input) {
-        exactKeys(input, ["runId", "epoch", "message", ...(Object.hasOwn(input, "title") ? ["title"] : [])], "Optimization Candidate input")
+        exactKeys(input, ["runId", "epoch", "message", ...["title", "parentVersionId"].filter((key) => Object.hasOwn(input, key))], "Optimization Candidate input")
         const runId = requiredId(input.runId, "Optimization Run")
         const epoch = requiredEpoch(input.epoch)
         const message = requiredText(input.message, "Candidate commit message", 2_000)
@@ -297,6 +298,12 @@ class OptimizationWorkspaceManager {
             throw new Error("Optimization workspace branch identity changed")
         }
         const before = await this.git.worktreeHead(record.workspacePath)
+        const parentVersionId = input.parentVersionId ?? record.parentVersionId ??
+            this.store.listVersions(record.skillId).find((v) => v.commit === before)?.id ?? record.versionId
+        const parent = this.store.getVersion(parentVersionId)
+        if (parent.skillId !== record.skillId || parent.repositoryId !== record.repositoryId) {
+            throw new Error("Candidate parent must belong to the same managed Skill")
+        }
         if (!await this.git.isAncestor(record.repositoryPath, record.baselineCommit, before)) {
             throw new Error("Optimization workspace HEAD is outside its frozen baseline history")
         }
@@ -309,6 +316,10 @@ class OptimizationWorkspaceManager {
                 .find((entry) => entry.commit === before)
             if (recorded) {
                 if (recorded.optimizationRunId === runId && recorded.optimizationEpoch === epoch) {
+                    if (input.parentVersionId && recorded.parentVersionId && input.parentVersionId !== recorded.parentVersionId) {
+                        throw new Error("Recorded Candidate parent changed")
+                    }
+                    record.parentVersionId = recorded.id
                     return recorded
                 }
                 throw new Error("Optimization workspace HEAD belongs to another Candidate")
@@ -362,7 +373,7 @@ class OptimizationWorkspaceManager {
         if (snapshot.digest !== workingSnapshot.digest || snapshot.digest === record.baselineDigest) {
             throw new Error("Committed Optimization Skill digest is inconsistent")
         }
-        return this.store.addVersion({
+        const candidate = this.store.addVersion({
             repositoryId: record.repositoryId,
             skillId: record.skillId,
             commit,
@@ -370,9 +381,13 @@ class OptimizationWorkspaceManager {
             state: "candidate",
             createdBy: "optimization",
             title: input.title ? requiredText(input.title, "Candidate title", 80) : message.split("\n")[0].slice(0, 80),
+            changeSummary: message,
+            parentVersionId,
             optimizationRunId: runId,
             optimizationEpoch: epoch,
         })
+        record.parentVersionId = candidate.id
+        return candidate
     }
 
     cleanup(runId) {

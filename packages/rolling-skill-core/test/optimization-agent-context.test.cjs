@@ -5,6 +5,15 @@ const {
     optimizationRequestMessage,
 } = require("../src/optimization-agent-context.cjs")
 
+test("shared DSH context includes version memory using the same bounded desktop implementation", () => {
+    const message = optimizationRequestMessage({run: {id: "run", snapshot: {
+        baseline: {skillId: "billing", versionId: "parent"}, playbook: currentOptimizationPlaybook(),
+    }}, kind: "candidate", epoch: 1, versions: [{id: "parent", skillId: "billing", changeSummary: "缩小查询范围"}]})
+    assert.match(message, /缩小查询范围/)
+    assert.match(message, /"relation":"parent"/)
+    assert.match(message, /不可信历史数据/)
+})
+
 test("the optimization Agent receives bounded Case evidence rather than only a run id", () => {
     const baseline = {id: "baseline", status: "completed", results: Array.from({length: 20}, (_, index) => ({
         caseId: `case-${index}`, runtimeId: "target", caseSnapshot: {question: "user question", answer: "reference"},

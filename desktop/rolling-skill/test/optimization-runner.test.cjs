@@ -239,6 +239,7 @@ function runnerFixture(options = {}) {
     let candidateEpoch = 0
     const workspaceManager = {
         createCalls: 0,
+        candidateInputs: [],
         registered: null,
         async create() {
             this.createCalls += 1
@@ -254,6 +255,7 @@ function runnerFixture(options = {}) {
             return structuredClone(this.registered)
         },
         async createCandidate(input) {
+            this.candidateInputs.push(structuredClone(input))
             assert.equal(input.epoch > candidateEpoch, true)
             candidateEpoch = input.epoch
             return candidate(run.id, candidateEpoch)
@@ -401,6 +403,7 @@ describe("sampled multi-candidate OptimizationRunner", () => {
         assert.equal(fixture.operatorGateway.candidateRequests, 6)
         assert.equal(fixture.evaluationCalls.length, 7)
         assert.equal(fixture.releaseCalls[0].candidate.id, "candidate-4")
+        assert.deepEqual(fixture.workspaceManager.candidateInputs.map((input) => input.parentVersionId), fixture.parents)
     })
 
     it("restores the baseline successfully when no candidate improves it", async () => {

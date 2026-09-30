@@ -725,6 +725,7 @@ function createOperatorRuntime({
                 run, kind, epoch,
                 baselineEvaluation: evaluation(run.checkpoint.baselineEvaluationRunId),
                 currentEvaluation: evaluation(run.checkpoint.activeEvaluationRunId),
+                versions: kind === "candidate" ? managedSkillStore.listVersions(run.snapshot.baseline.skillId) : [],
             }))
         },
     })

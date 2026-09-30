@@ -6307,6 +6307,9 @@ function renderSkillManagementWorkbench() {
                 run: version.optimizationRunId.slice(0, 8), epoch: version.optimizationEpoch,
             })))
         }
+        if (version.changeSummary) {
+            card.append(node("p", "managed-version-summary", version.changeSummary))
+        }
         const actions = node("div", "managed-version-actions")
         if (version.state === "candidate") {
             const release = node("button", "primary", t("releaseVersion"))

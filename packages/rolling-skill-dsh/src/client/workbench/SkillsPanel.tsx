@@ -19,6 +19,7 @@ interface Version {
     versionLabel: string | null
     commit: string
     contentDigest: string
+    changeSummary?: string | null
     createdAt?: string | null
     releasedAt?: string | null
     deprecatedAt?: string | null
@@ -183,7 +184,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
                 <details className="rolling-skill-manifest-details"><summary>{t("viewSkillContent")}</summary><pre className="rolling-skill-manifest">{detail.manifest}</pre></details>
                 <h4 className="rolling-skill-version-heading">{t("publishedVersions")}</h4>
                 <div className="rolling-skill-list">
-                    {publishedVersions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("notAvailable")}</strong>{!version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : <span>{t("deprecatedVersion")}</span>}</header><dl><div><dt>{t("createdAt")}</dt><dd>{dateTime(version.releasedAt ?? version.createdAt, t("notAvailable"))}</dd></div></dl></article>)}
+                    {publishedVersions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("notAvailable")}</strong>{!version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : <span>{t("deprecatedVersion")}</span>}</header>{version.changeSummary ? <p>{version.changeSummary}</p> : null}<dl><div><dt>{t("createdAt")}</dt><dd>{dateTime(version.releasedAt ?? version.createdAt, t("notAvailable"))}</dd></div></dl></article>)}
                     {publishedVersions.length === 0 ? <p>{t("emptyPublishedVersions")}</p> : null}
                 </div>
                 <SkillEditModal t={t} open={editOpen} skillId={detail.skill.id} skillName={detail.skill.name} onClose={() => {setEditOpen(false); setRevision((value) => value + 1)}} onPublished={() => {setHasActiveEdit(false); setRevision((value) => value + 1)}}/>

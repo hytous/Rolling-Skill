@@ -387,6 +387,7 @@ class ManagedSkillManager {
                         contentDigest: snapshots.get(skill.skillRoot).digest,
                         state: "candidate",
                         createdBy: "import",
+                        changeSummary: "导入 Skill，作为版本管理起点。",
                     }))
                 return {repository, skills, versions}
             })
@@ -487,6 +488,7 @@ class ManagedSkillManager {
             }
 
             const status = await this.git.status(repository.managedPath)
+            const beforeHead = await this.git.head(repository.managedPath)
             const commit = status.dirty
                 ? await this.git.commitAll(
                     repository.managedPath,
@@ -496,6 +498,14 @@ class ManagedSkillManager {
                         .map((entry) => entry.skillRoot)},
                 )
                 : await this.git.head(repository.managedPath)
+            // Read the committed message on recovery, not a new retry caption.
+            const changeSummary = (await this.git.run(["show", "-s", "--format=%B", commit], {
+                cwd: repository.managedPath,
+            })).stdout
+            const baseCommit = status.dirty ? beforeHead : (await this.git.run(
+                ["rev-parse", "--verify", `${commit}^`],
+                {cwd: repository.managedPath, allowExitCodes: [0, 128]},
+            )).stdout
             const committedScan = scanManagedSkillRepository(
                 repository.managedPath,
                 this.scanLimits,
@@ -504,6 +514,7 @@ class ManagedSkillManager {
                 throw new Error("Managed Skill Working tree changed while the Candidate was created")
             }
             const snapshots = new Map()
+            const parentIds = new Map()
             for (const scannedSkill of committedScan.skills.filter((entry) => entry.status === "valid")) {
                 snapshots.set(scannedSkill.skillRoot, await this.git.snapshotSkill(
                     repository.managedPath,
@@ -511,6 +522,15 @@ class ManagedSkillManager {
                     scannedSkill.skillRoot,
                     this.scanLimits,
                 ))
+                const existing = existingByRoot.get(scannedSkill.skillRoot)
+                if (existing && /^[a-f0-9]{40}$/u.test(baseCommit)) {
+                    const baseSnapshot = await this.git.snapshotSkill(repository.managedPath, baseCommit,
+                        scannedSkill.skillRoot, this.scanLimits)
+                    const versions = this.store.listVersions(existing.id)
+                    const parent = versions.find((v) => v.commit === baseCommit) ??
+                        versions.find((v) => v.contentDigest === baseSnapshot.digest)
+                    parentIds.set(scannedSkill.skillRoot, parent?.id ?? null)
+                }
             }
             const {storedSkills, createdVersions} = this.store.transaction(() => {
                 const storedSkills = this.store.replaceRepositorySkills(
@@ -531,6 +551,8 @@ class ManagedSkillManager {
                         state: "candidate",
                         createdBy: input.createdBy ?? "user",
                         title,
+                        changeSummary,
+                        parentVersionId: parentIds.get(storedSkill.skillRoot) ?? null,
                         optimizationRoundId: input.optimizationRoundId ?? null,
                     }))
                 }
@@ -687,6 +709,9 @@ class ManagedSkillManager {
                         contentDigest: committedSnapshot.digest,
                         state: "candidate",
                         createdBy: "user",
+                        changeSummary: input.changeSummary ?? message,
+                        parentVersionId: versions.find((v) => v.commit === current.commit && v.contentDigest === current.contentDigest)?.id ??
+                            versions.find((v) => v.contentDigest === current.contentDigest)?.id ?? null,
                     })
                     return this.store.releaseVersion(candidate.id, versionLabel)
                 })

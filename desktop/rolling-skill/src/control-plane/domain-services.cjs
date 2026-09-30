@@ -233,6 +233,8 @@ function managedVersionSummary(version) {
         "state",
         "versionLabel",
         "title",
+        "changeSummary",
+        "parentVersionId",
         "createdBy",
         "optimizationRoundId",
         "optimizationRunId",

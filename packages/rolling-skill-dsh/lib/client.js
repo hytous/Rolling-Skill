@@ -16435,6 +16435,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
             /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("strong", { children: version.versionLabel ?? t("notAvailable") }),
             !version.deprecatedAt ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void deprecate(version), children: t("deprecateVersion") }) : /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { children: t("deprecatedVersion") })
           ] }),
+          version.changeSummary ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("p", { children: version.changeSummary }) : null,
           /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("dl", { children: /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { children: [
             /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("dt", { children: t("createdAt") }),
             /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("dd", { children: dateTime3(version.releasedAt ?? version.createdAt, t("notAvailable")) })

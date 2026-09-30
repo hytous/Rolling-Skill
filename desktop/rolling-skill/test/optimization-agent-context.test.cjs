@@ -19,6 +19,31 @@ const playbookPath = join(
 )
 
 describe("optimization Agent context", () => {
+    it("supplies short version memory in linear and sampled optimization without mixing parents", () => {
+        const {optimizationRequestMessage} = require(contextPath)
+        const {currentOptimizationPlaybook} = require(playbookPath)
+        const versions = [
+            {id: "base", skillId: "skill", changeSummary: "基线规则"},
+            {id: "first", skillId: "skill", parentVersionId: "base", changeSummary: "先过滤再下钻"},
+            {id: "other", skillId: "foreign", changeSummary: "PRIVATE"},
+        ]
+        const run = {id: "run", snapshot: {baseline: {skillId: "skill", versionId: "base"},
+            playbook: currentOptimizationPlaybook(), limits: {maxEpochs: 3}}}
+        const linear = optimizationRequestMessage({run, versions, kind: "candidate", epoch: 2,
+            currentEvaluation: {managedVersionSnapshot: {versionId: "first"}}})
+        assert.match(linear, /"versionId":"first","relation":"parent"/)
+        assert.match(linear, /先过滤再下钻/)
+        assert.match(linear, /最多 120 字/)
+        run.snapshot.search = {}
+        run.checkpoint = {searchRequest: {epoch: 2, parentId: "base", feedback: {cards: []}}}
+        const sampled = optimizationRequestMessage({run, versions, kind: "candidate", epoch: 2,
+            currentEvaluation: {managedVersionSnapshot: {versionId: "first"}}})
+        assert.match(sampled, /"versionId":"base","relation":"parent"/)
+        assert.match(sampled, /"versionId":"first","relation":"other_attempt"/)
+        assert.doesNotMatch(sampled, /PRIVATE/)
+        assert.ok(sampled.length <= 32768)
+    })
+
     it("uses the frozen sampled parent feedback without injecting full evaluation piles", () => {
         const {optimizationRequestMessage} = require(contextPath)
         const {currentOptimizationPlaybook} = require(playbookPath)

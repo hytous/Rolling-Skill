@@ -181,6 +181,7 @@ describe("Rolling Skill Agent edit services", () => {
         })
         assert.deepEqual(operatorStart.actions, ["skills.read"])
         assert.equal(test.calls.some(([kind]) => kind === "apply"), true)
+        assert.equal(test.calls.find(([kind]) => kind === "apply")[1].changeSummary, "I updated Skill edit workspace/SKILL.md.")
         assert.equal(test.calls.some(([kind]) => kind === "workspace.cleanup"), true)
         const shutdownIndex = test.calls.findIndex(([kind]) => kind === "operator.cancel")
         assert.ok(shutdownIndex > test.calls.findIndex(([kind]) => kind === "apply"))

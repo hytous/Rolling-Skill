@@ -98,6 +98,9 @@ describe("OptimizationWorkspaceManager", () => {
         await assert.rejects(() => workspaces.prepareParent(run.id, first), /uncommitted/)
         write(path, manifest("Second independent candidate"))
         const second = await workspaces.createCandidate({runId: run.id, epoch: 2, message: "second"})
+        assert.equal(first.parentVersionId, baseline.id)
+        assert.equal(second.parentVersionId, baseline.id, "logical parent is not the preceding Git commit")
+        assert.equal(second.changeSummary, "second")
         assert.equal(await git.defaultBranch(workspace.workspacePath), workspace.branchName)
         const repository = store.getRepository(run.snapshot.baseline.repositoryId)
         await workspaces.cleanup(run.id)
@@ -105,6 +108,9 @@ describe("OptimizationWorkspaceManager", () => {
         assert.equal(await git.isAncestor(repository.managedPath, first.commit, second.commit), true)
         assert.equal(await git.head(repository.managedPath), run.snapshot.baseline.commit)
         assert.equal(store.getVersion(first.id).commit, first.commit)
+        const reopened = new ManagedSkillStore(store.path)
+        assert.equal(reopened.getVersion(second.id).parentVersionId, baseline.id)
+        assert.equal(reopened.getVersion(second.id).changeSummary, "second")
     })
     it("rejects an optimization workspace root redirected outside Application Support", () => {
         const applicationSupportDirectory = temporaryDirectory()
@@ -153,6 +159,8 @@ describe("OptimizationWorkspaceManager", () => {
         })
 
         assert.equal(candidate.title, "修正预算比例与实例排名")
+        assert.equal(candidate.changeSummary, "Improve billing workflow")
+        assert.equal(candidate.parentVersionId, run.snapshot.baseline.versionId)
         assert.equal(store.getVersion(candidate.id).title, candidate.title)
         assert.equal(candidate.repositoryId, run.snapshot.baseline.repositoryId)
         assert.equal(candidate.skillId, run.snapshot.baseline.skillId)
@@ -254,6 +262,8 @@ describe("OptimizationWorkspaceManager", () => {
         })
         assert.equal(recovered.optimizationRunId, run.id)
         assert.equal(recovered.optimizationEpoch, 1)
+        assert.equal(recovered.changeSummary, "Recover candidate")
+        assert.equal(recovered.parentVersionId, run.snapshot.baseline.versionId)
         assert.equal(store.getVersion(recovered.id).commit, recovered.commit)
     })
 

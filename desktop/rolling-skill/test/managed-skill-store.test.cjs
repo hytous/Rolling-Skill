@@ -81,6 +81,55 @@ function versionRecord(index, skillId = "skill-1") {
 }
 
 describe("managed Skill registry", () => {
+    it("persists compact version memory and its logical parent through release and restart", () => {
+        const {root, path, store} = fixture()
+        const repository = addRepository(store, root)
+        const skill = addSkill(store, repository.id)
+        const parent = addCandidate(store, repository, skill)
+        const candidate = store.addVersion({repositoryId: repository.id, skillId: skill.id,
+            commit: "c".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`,
+            state: "candidate", createdBy: "optimization", parentVersionId: parent.id,
+            changeSummary: "  先筛选账单，再按需下钻。\n\n冗长执行日志不进入记忆。"})
+        store.releaseVersion(candidate.id, "v2")
+        const reopened = new ManagedSkillStore(path).getVersion(candidate.id)
+        assert.equal(reopened.changeSummary, "先筛选账单，再按需下钻。")
+        assert.equal(reopened.parentVersionId, parent.id)
+        assert.equal(reopened.state, "released")
+        assert.equal(store.getVersion(parent.id).changeSummary, null)
+    })
+
+    it("loads legacy versions without manufacturing memory or rewriting their history", () => {
+        const {root, path, store} = fixture()
+        const repository = addRepository(store, root)
+        const skill = addSkill(store, repository.id)
+        const candidate = addCandidate(store, repository, skill)
+        const legacy = store.read()
+        delete legacy.versions[0].changeSummary
+        delete legacy.versions[0].parentVersionId
+        legacy.versions[0].title = "早期版本标题"
+        writeFileSync(path, JSON.stringify(legacy))
+        const before = readFileSync(path, "utf8")
+        const reopened = new ManagedSkillStore(path)
+        assert.equal(reopened.getVersion(candidate.id).changeSummary, undefined)
+        assert.equal(readFileSync(path, "utf8"), before)
+    })
+
+    it("rejects cross-Skill parents and cyclic persisted version memory", () => {
+        const {root, path, store} = fixture()
+        const repository = addRepository(store, root)
+        const skill = addSkill(store, repository.id)
+        const parent = addCandidate(store, repository, skill)
+        const otherRepository = addRepository(store, root, "other")
+        const otherSkill = addSkill(store, otherRepository.id, "other")
+        assert.throws(() => store.addVersion({repositoryId: otherRepository.id, skillId: otherSkill.id,
+            commit: "c".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`,
+            state: "candidate", createdBy: "user", parentVersionId: parent.id}), /same managed Skill/)
+        const corrupt = store.read()
+        corrupt.versions[0].parentVersionId = parent.id
+        writeFileSync(path, JSON.stringify(corrupt))
+        assert.throws(() => new ManagedSkillStore(path), /cycle/)
+    })
+
     it("creates a private versioned registry and returns defensive copies", () => {
         const {path, store} = fixture()
         const snapshot = store.read()

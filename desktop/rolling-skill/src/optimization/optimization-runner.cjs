@@ -705,6 +705,9 @@ class OptimizationRunner {
                             runId: control.runId,
                             epoch: epochNumber,
                             message: String(submission?.message ?? ""),
+                            parentVersionId: run.snapshot.search
+                                ? this.store.getRun(control.runId).checkpoint.searchRequest.parentId
+                                : control.currentCandidate?.id ?? run.snapshot.baseline.versionId,
                             ...(submission?.title ? {title: submission.title} : {}),
                         })
                         const artifact = this.#artifact(

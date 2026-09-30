@@ -102,6 +102,8 @@ function renderEpoch(lines, epoch, read) {
         `- 状态：${display(epoch.status)}`,
         `- Candidate：${display(candidate.id ?? candidate.versionId)}`,
         `- commit：${display(candidate.commit)}`,
+        `- 修改摘要：${display(candidate.changeSummary ?? candidate.title, "未记录")}`,
+        `- 逻辑父版本：${display(candidate.parentVersionId, "未记录")}`,
         `- 内容摘要：${display(candidate.contentDigest)}`,
         `- Diff 摘要：${display(candidate.diffSummary, "未提供")}`,
         `- 得分：${display(analysis.score)}（相对上一轮 Δ ${display(analysis.scoreDelta)}）`,

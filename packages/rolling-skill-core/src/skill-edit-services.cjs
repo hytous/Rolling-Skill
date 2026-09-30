@@ -52,6 +52,7 @@ function editObjectivePrompt(objective) {
         "Edit the isolated managed Skill draft in this workspace.",
         "Work only inside the current workspace. Do not publish, install, or modify another Skill.",
         "Inspect the existing files, make the requested changes directly, and explain the result briefly.",
+        "Finish with a factual one-sentence change summary (at most 120 characters) as the first paragraph; it will be saved with this version. Do not claim unmeasured improvements.",
         "",
         `User request: ${objective}`,
     ].join("\n")
@@ -347,6 +348,9 @@ function createSkillEditServices({
                         snapshotDigest: record.baseSnapshotDigest,
                     },
                     message: `Apply Agent edit for ${record.skillId}`,
+                    changeSummary: publicMessageText(
+                        messages(operator, record).filter((entry) => entry.role === "assistant").at(-1)?.content ??
+                        "已应用 Agent 修改，未提供修改摘要。", record.workspacePath),
                 })
                 let shutdownError = null
                 try {
